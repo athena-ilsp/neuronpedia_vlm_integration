@@ -1,4 +1,6 @@
+import json
 import logging
+import os
 import time
 from collections import OrderedDict
 from typing import Any
@@ -21,6 +23,7 @@ DFA_ENABLED_NP_ID_SEGMENT_ALT = "-att_"
 class SAE_TYPE:
     NEURONS = "neurons"
     SAELENS = "saelens-1"
+    VLM = "vlm"
 
 
 class SAEManager:
@@ -49,6 +52,8 @@ class SAEManager:
         self.sae_set_to_saes = {}
         self.valid_sae_sets = []
         self.loaded_saes = OrderedDict()  # Keep track of loaded SAEs
+        # VLM change: mapping of VLM SAE IDs to local .pt file paths
+        self.vlm_sae_paths = {}
         # self.load_saes()
 
     def load_saes(self):
@@ -62,6 +67,18 @@ class SAEManager:
             self.valid_sae_sets.append(sae_set["set"])
             all_sae_ids.extend(sae_set["saes"])
             self.sae_set_to_saes[sae_set["set"]] = sae_set["saes"]
+
+        # VLM change: load VLM SAEs from VLM_SAE_PATHS env var
+        # VLM_SAE_SET_NAME allows matching the source set name in the DB (default: "vlm-sae")
+        vlm_sae_paths = json.loads(os.getenv("VLM_SAE_PATHS", "{}"))
+        if vlm_sae_paths:
+            vlm_set_name = os.getenv("VLM_SAE_SET_NAME", "vlm-sae")
+            vlm_sae_ids = list(vlm_sae_paths.keys())
+            all_sae_ids.extend(vlm_sae_ids)
+            self.vlm_sae_paths = vlm_sae_paths
+            self.valid_sae_sets.append(vlm_set_name)
+            self.sae_set_to_saes[vlm_set_name] = vlm_sae_ids
+            logger.info(f"Found {len(vlm_sae_ids)} VLM SAEs to load: {vlm_sae_ids}")
 
         starting_saes = self.get_starting_saes(all_sae_ids)
 
@@ -100,6 +117,26 @@ class SAEManager:
         start_time = time.time()
         logger.info(f"Loading SAE: {sae_id}")
 
+        # VLM change: check if this is a VLM SAE (loaded from local .pt file)
+        vlm_sae_paths = getattr(self, "vlm_sae_paths", {})
+        if sae_id in vlm_sae_paths:
+            self._load_vlm_sae(sae_id, vlm_sae_paths[sae_id])
+        else:
+            self._load_saelens_sae(model_id, sae_id)
+
+        self.loaded_saes[sae_id] = None  # We're using OrderedDict as an OrderedSet
+        if len(self.loaded_saes) > self.max_loaded_saes:
+            lru_sae = next(iter(self.loaded_saes))
+            self.unload_sae(lru_sae)
+
+        end_time = time.time()
+
+        logger.info(
+            f"Successfully loaded SAE: {sae_id} in {end_time - start_time:.2f} seconds"
+        )
+
+    def _load_saelens_sae(self, model_id: str, sae_id: str) -> None:
+        """Load a standard sae-lens SAE from the pretrained directory."""
         sae_lens_release, sae_lens_id = get_sae_lens_ids_from_neuronpedia_id(
             model_id=model_id,
             neuronpedia_id=sae_id,
@@ -130,16 +167,26 @@ class SAEManager:
             "transcoder": False,  # You might want to set this based on some condition
         }
 
-        self.loaded_saes[sae_id] = None  # We're using OrderedDict as an OrderedSet
-        if len(self.loaded_saes) > self.max_loaded_saes:
-            lru_sae = next(iter(self.loaded_saes))
-            self.unload_sae(lru_sae)
+    # VLM change: new method to load VLM SAEs from local .pt checkpoint files
+    def _load_vlm_sae(self, sae_id: str, path: str) -> None:
+        """Load a VLM SAE from a local .pt checkpoint file."""
+        from neuronpedia_inference.saes.vlm_sae import VlmSAE
 
-        end_time = time.time()
-
-        logger.info(
-            f"Successfully loaded SAE: {sae_id} in {end_time - start_time:.2f} seconds"
+        loaded_sae, hook_name = VlmSAE.load(
+            path=path,
+            device=self.device,
+            dtype=self.config.sae_dtype,
         )
+
+        self.sae_data[sae_id] = {
+            "sae": loaded_sae,
+            "hook": hook_name,
+            "neuronpedia_id": None,
+            "type": SAE_TYPE.VLM,
+            "dfa_enabled": False,
+            "transcoder": getattr(loaded_sae.inner, "cfg", None)
+            and getattr(loaded_sae.inner.cfg, "is_transcoder", False),
+        }
 
     def unload_sae(self, sae_id: str) -> None:
         start_time = time.time()

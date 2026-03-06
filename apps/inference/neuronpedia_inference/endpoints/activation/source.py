@@ -173,6 +173,10 @@ class ActivationProcessor:
         layer_num = self._get_layer_num(request.source)
         hook_name = sae_manager.get_sae_hook(request.source)
 
+        # VLM change: set image on model adapter if provided
+        if hasattr(model, "set_image"):
+            model.set_image(getattr(request, "image_base64", None))
+
         with torch.no_grad():
             if isinstance(model, StandardizedTransformer):
                 cache = {}

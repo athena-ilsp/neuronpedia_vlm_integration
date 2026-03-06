@@ -9,6 +9,7 @@
   - [developing the inference client](#developing-the-inference-client)
 - [setup + run - docker](#setup--run---docker)
 - [setup + run - kubernetes](#setup--run---kubernetes)
+- [VLM support (Gemma-3 + custom SAEs)](#vlm-support-gemma-3--custom-saes)
 - [usage examples](#usage-examples)
   - [get activations for a single feature and prompt](#get-activations-for-a-single-feature-and-prompt)
   - [get activations from one or more layers/sources/SAEs for a prompt](#get-activations-from-one-or-more-layerssourcessaes-for-a-prompt)
@@ -290,6 +291,16 @@ curl -X POST http://127.0.0.1:5002/v1/steer/completion \
      "normalize_steering": false
    }'
 ```
+
+---
+
+## VLM support (Gemma-3 + custom SAEs)
+
+See the [VLM Integration section in the main README](../../README.md#vlm-integration-for-visualizing-gemma-3--custom-saes) for setup, environment variables, and how to add new checkpoints.
+
+For a deep technical reference (hook point equivalence, adapter internals, SAE forward pass, sparsity analysis), see [VLM_INTEGRATION_REPORT.md](../../VLM_INTEGRATION_REPORT.md).
+
+---
 
 ## Testing, Linting, and Formatting
 

@@ -145,6 +145,12 @@ class ActivationProcessor:
             request.prompt, prepend_bos, request, max_layer
         )
 
+        # VLM change: debug logging for token counts
+        logger.info(
+            "VLM DEBUG process_activations: str_tokens=%s (len=%d), prompt=%r",
+            str_tokens, len(str_tokens), request.prompt[:100],
+        )
+
         # ensure sort_by_token_indexes doesn't have any out of range indexes
         # TODO: return a better error for this (currently returns a 500 error)
         for token_index in request.sort_by_token_indexes:
@@ -153,7 +159,7 @@ class ActivationProcessor:
                     f"Sort by token index {token_index} is out of range for the given prompt, which only has {len(str_tokens)} tokens."
                 )
 
-        source_activations = self._process_sources(request, cache)
+        source_activations = self._process_sources(request, cache, str_tokens)
 
         sorted_activations = self._sort_and_filter_results(source_activations, request)
         feature_activations = self._format_result_and_calculate_dfa(
@@ -179,6 +185,12 @@ class ActivationProcessor:
         """Process input text and return tokens, string tokens, and cache."""
         model = Model.get_instance()
         config = Config.get_instance()
+
+        # VLM change: set image BEFORE tokenization so to_tokens/to_str_tokens include image patch tokens
+        if hasattr(model, "set_image"):
+            img_b64 = getattr(request, "image_base64", None)
+            logger.info("VLM DEBUG set_image: image_base64 present=%s len=%s", img_b64 is not None, len(img_b64) if img_b64 else 0)
+            model.set_image(img_b64)
 
         if isinstance(model, StandardizedTransformer):
             tokens = model.tokenizer(
@@ -240,6 +252,7 @@ class ActivationProcessor:
         self,
         request: ActivationAllPostRequest,
         cache: ActivationCache,
+        str_tokens: list[str] = None,
     ) -> list[dict[str, Any]]:
         """Process activations for each selected layer."""
         sae_manager = SAEManager.get_instance()
@@ -267,6 +280,8 @@ class ActivationProcessor:
                     layer_num,
                     request.sort_by_token_indexes,
                     request.ignore_bos,
+                    str_tokens,
+                    activation_threshold=request.activation_threshold,
                 )
             )
 
@@ -285,9 +300,40 @@ class ActivationProcessor:
             return torch.transpose(mlp_activation_data[0], 0, 1)
 
         activation_data = cache[hook_name].to(Config.get_instance().device)
+        # VLM change: debug logging for activation shapes and per-token stats
+        logger.info(
+            "VLM DEBUG _get_activations_by_index: cache[%s] shape=%s",
+            hook_name, activation_data.shape,
+        )
+        # Log raw model activation stats per token position
+        raw = activation_data.squeeze(0)  # [seq_len, d_model]
+        for t in range(min(raw.shape[0], 8)):
+            logger.info(
+                "VLM DEBUG raw_activations token %d: mean=%.4f, std=%.4f, min=%.4f, max=%.4f, norm=%.4f",
+                t, raw[t].mean().item(), raw[t].std().item(),
+                raw[t].min().item(), raw[t].max().item(), raw[t].norm().item(),
+            )
         feature_activation_data = (
             SAEManager.get_instance().get_sae(selected_source).encode(activation_data)
         )
+        # VLM change: debug logging for feature activation shapes
+        logger.info(
+            "VLM DEBUG _get_activations_by_index: feature_acts shape=%s, after squeeze+transpose shape=%s",
+            feature_activation_data.shape,
+            torch.transpose(feature_activation_data.squeeze(0), 0, 1).shape,
+        )
+        # Log per-token feature activation stats
+        feats = feature_activation_data.squeeze(0)  # [seq_len, d_sae]
+        for t in range(min(feats.shape[0], 8)):
+            nonzero = (feats[t] > 0).sum().item()
+            if nonzero > 0:
+                nz_vals = feats[t][feats[t] > 0]
+                logger.info(
+                    "VLM DEBUG feature_acts token %d: nonzero=%d, nz_mean=%.4f, nz_max=%.4f, nz_min=%.4f",
+                    t, nonzero, nz_vals.mean().item(), nz_vals.max().item(), nz_vals.min().item(),
+                )
+            else:
+                logger.info("VLM DEBUG feature_acts token %d: nonzero=0 (all zero)", t)
         return torch.transpose(feature_activation_data.squeeze(0), 0, 1)
 
     def _process_source_activations(
@@ -296,6 +342,8 @@ class ActivationProcessor:
         layer_num: int,
         sort_by_token_indexes: list[int],
         ignore_bos: bool,
+        str_tokens: list[str] = None,
+        activation_threshold: float | None = None,
     ) -> dict[str, Any]:
         model = Model.get_instance()
         if ignore_bos:
@@ -304,9 +352,60 @@ class ActivationProcessor:
                 or model.cfg.default_prepend_bos
             ):
                 activations_by_index[:, 0] = 0
+            
+            # VLM change: ignore chat template tokens if they are present at the start
+            if str_tokens is not None:
+                template_prefix = ['<bos>', '<start_of_turn>', 'user', '\n']
+                if len(str_tokens) >= len(template_prefix) and str_tokens[:len(template_prefix)] == template_prefix:
+                    for i in range(len(template_prefix)):
+                        activations_by_index[:, i] = 0
+                
+                # Also ignore all special structural tokens anywhere in the sequence
+                special_tokens = {'<bos>', '<eos>', '<start_of_turn>', '<end_of_turn>'}
+                for i, t in enumerate(str_tokens):
+                    if t in special_tokens:
+                        activations_by_index[:, i] = 0
+
+        # VLM change: apply activation threshold — zero out activations below the threshold.
+        # This is useful for under-sparse SAEs (trained with weak l1, not top-k) where many
+        # features have small but nonzero activations at every token.
+        logger.info("VLM DEBUG activation_threshold received: %s (type=%s)", activation_threshold, type(activation_threshold))
+        if activation_threshold is not None and activation_threshold > 0:
+            activations_by_index = activations_by_index.clone()
+            activations_by_index[activations_by_index < activation_threshold] = 0
+            logger.info("VLM DEBUG threshold applied: nonzero after=%d", (activations_by_index > 0).sum().item())
 
         """Process activations for a single layer."""
+        # VLM change: debug logging for activation tensor shape
+        logger.info(
+            "VLM DEBUG _process_source_activations: activations_by_index shape=%s (features x tokens)",
+            activations_by_index.shape,
+        )
         max_values, max_indices = torch.max(activations_by_index, dim=1)
+        # VLM change: debug — show distribution of max_indices to check if all features max at same token
+        unique_indices, counts = torch.unique(max_indices, return_counts=True)
+        logger.info(
+            "VLM DEBUG _process_source_activations: max_indices distribution: %s",
+            dict(zip(unique_indices.tolist(), counts.tolist())),
+        )
+        # VLM debug: log feature 9904 activations across all token positions
+        if activations_by_index.shape[0] > 9904:
+            f9904_vals = activations_by_index[9904].tolist()
+            logger.info(
+                "VLM DEBUG feature 9904 activations across tokens: %s (max=%.4f at pos %d)",
+                [f"{v:.4f}" for v in f9904_vals],
+                max(f9904_vals),
+                f9904_vals.index(max(f9904_vals)),
+            )
+        # VLM debug: log top 10 features by max_value (after ignore_bos zeroing)
+        top10_vals, top10_idx = torch.topk(max_values, min(10, len(max_values)))
+        for rank in range(len(top10_idx)):
+            fidx = top10_idx[rank].item()
+            fvals = activations_by_index[fidx].tolist()
+            logger.info(
+                "VLM DEBUG top feature rank %d: idx=%d, max=%.4f, all_tokens=%s",
+                rank, fidx, top10_vals[rank].item(), [f"{v:.4f}" for v in fvals],
+            )
         layer_num_tensor = torch.full(max_values.shape, layer_num).to(
             Config.get_instance().device
         )
@@ -366,7 +465,15 @@ class ActivationProcessor:
         # if request.ignore_bos and Model.get_instance().cfg.default_prepend_bos:
         #     sorted_activations = sorted_activations[sorted_activations[:, 3] != 0]
 
-        return sorted_activations[: request.num_results].tolist()
+        top_results = sorted_activations[: request.num_results]
+        # VLM debug: log top results max_value and max_index
+        for i in range(min(5, len(top_results))):
+            r = top_results[i]
+            logger.info(
+                "VLM DEBUG top result %d: layer=%d, idx=%d, max_val=%.4f, max_token_idx=%d",
+                i, int(r[0]), int(r[1]), float(r[2]), int(r[3]),
+            )
+        return top_results.tolist()
 
     def _format_result_and_calculate_dfa(
         self,

@@ -49,6 +49,12 @@ export interface ActivationTopkByTokenPostRequest {
      * @memberof ActivationTopkByTokenPostRequest
      */
     ignoreBos: boolean;
+    /**
+     * VLM change: Base64-encoded image for VLM models.
+     * @type {string}
+     * @memberof ActivationTopkByTokenPostRequest
+     */
+    imageBase64?: string;
 }
 
 /**
@@ -77,6 +83,7 @@ export function ActivationTopkByTokenPostRequestFromJSONTyped(json: any, ignoreD
         'source': json['source'],
         'topK': json['top_k'] == null ? undefined : json['top_k'],
         'ignoreBos': json['ignore_bos'],
+        'imageBase64': json['image_base64'] == null ? undefined : json['image_base64'],
     };
 }
 
@@ -96,6 +103,7 @@ export function ActivationTopkByTokenPostRequestToJSONTyped(value?: ActivationTo
         'source': value['source'],
         'top_k': value['topK'],
         'ignore_bos': value['ignoreBos'],
+        'image_base64': value['imageBase64'],
     };
 }
 

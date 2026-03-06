@@ -19,7 +19,7 @@ import re  # noqa: F401
 import json
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
-from typing import Any, ClassVar, Dict, List
+from typing import Any, ClassVar, Dict, List, Optional
 from typing import Optional, Set
 from typing_extensions import Self
 
@@ -30,7 +30,9 @@ class ActivationSourcePostRequest(BaseModel):
     prompts: List[StrictStr] = Field(description="Input text prompt to get activations for")
     model: StrictStr = Field(description="Name of the model to test activations on")
     source: StrictStr = Field(description="The source (eg 5-gemmascope-res-16k)")
-    __properties: ClassVar[List[str]] = ["prompts", "model", "source"]
+    # VLM change: optional base64-encoded image for VLM models
+    image_base64: Optional[StrictStr] = Field(default=None, description="Base64-encoded image for VLM models.")
+    __properties: ClassVar[List[str]] = ["prompts", "model", "source", "image_base64"]
 
     model_config = ConfigDict(
         populate_by_name=True,
@@ -85,7 +87,8 @@ class ActivationSourcePostRequest(BaseModel):
         _obj = cls.model_validate({
             "prompts": obj.get("prompts"),
             "model": obj.get("model"),
-            "source": obj.get("source")
+            "source": obj.get("source"),
+            "image_base64": obj.get("image_base64"),  # VLM change
         })
         return _obj
 

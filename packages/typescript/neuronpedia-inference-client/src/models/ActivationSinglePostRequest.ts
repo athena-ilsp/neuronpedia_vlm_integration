@@ -55,6 +55,12 @@ export interface ActivationSinglePostRequest {
      * @memberof ActivationSinglePostRequest
      */
     hook?: string;
+    /**
+     * VLM change: Base64-encoded image for VLM models.
+     * @type {string}
+     * @memberof ActivationSinglePostRequest
+     */
+    imageBase64?: string;
 }
 
 /**
@@ -82,6 +88,7 @@ export function ActivationSinglePostRequestFromJSONTyped(json: any, ignoreDiscri
         'index': json['index'] == null ? undefined : json['index'],
         'vector': json['vector'] == null ? undefined : json['vector'],
         'hook': json['hook'] == null ? undefined : json['hook'],
+        'imageBase64': json['image_base64'] == null ? undefined : json['image_base64'],
     };
 }
 
@@ -102,6 +109,7 @@ export function ActivationSinglePostRequestToJSONTyped(value?: ActivationSingleP
         'index': value['index'],
         'vector': value['vector'],
         'hook': value['hook'],
+        'image_base64': value['imageBase64'],
     };
 }
 

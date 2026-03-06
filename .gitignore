@@ -142,3 +142,9 @@ dist
 .secrets*
 
 CLAUDE.local.md
+
+# Model weights / SAE checkpoints — too large for git
+sae_weights/
+*.pt
+*.ckpt
+*.safetensors.env*

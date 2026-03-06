@@ -348,10 +348,12 @@ export const getCosSimForFeature = async (
   });
 };
 
+// VLM change: added optional imageBase64 parameter for VLM models
 export const getActivationForFeature = async (
   feature: NeuronPartial,
   defaultTestText: string | string[],
   user: AuthenticatedUser | null,
+  imageBase64?: string,
 ) => {
   if (!feature.modelId || !feature.layer || !feature.index) {
     throw new Error('Invalid feature');
@@ -373,6 +375,7 @@ export const getActivationForFeature = async (
   const transformerLensModelId = await getTransformerLensModelIdIfExists(modelIdForSearcher);
 
   if (Array.isArray(defaultTestText)) {
+    // VLM change: include imageBase64 in batch request if provided
     return makeInferenceServerApiWithServerHost(serverHost)
       .activationSingleBatchPost({
         activationSingleBatchPostRequest: result?.hasVector
@@ -381,12 +384,14 @@ export const getActivationForFeature = async (
               model: transformerLensModelId,
               vector: result.vector,
               hook: result.hookName || '',
+              ...(imageBase64 ? { imageBase64 } : {}),
             }
           : {
               prompts: defaultTestText,
               model: transformerLensModelId,
               source: feature.layer,
               index: feature.index,
+              ...(imageBase64 ? { imageBase64 } : {}),
             },
       })
       .then((result: ActivationSingleBatchPost200Response) =>
@@ -417,6 +422,7 @@ export const getActivationForFeature = async (
         throw error;
       });
   }
+  // VLM change: include imageBase64 in single request if provided
   return makeInferenceServerApiWithServerHost(serverHost)
     .activationSinglePost({
       activationSinglePostRequest: result?.hasVector
@@ -425,12 +431,14 @@ export const getActivationForFeature = async (
             model: transformerLensModelId,
             vector: result.vector,
             hook: result.hookName || '',
+            ...(imageBase64 ? { imageBase64 } : {}),
           }
         : {
             prompt: defaultTestText,
             model: transformerLensModelId,
             source: feature.layer,
             index: feature.index,
+            ...(imageBase64 ? { imageBase64 } : {}),
           },
     })
     .then((result: ActivationSinglePost200Response) => {
@@ -491,6 +499,8 @@ export const runInferenceActivationAll = async (
   sortIndexes: number[],
   ignoreBos: boolean,
   user: AuthenticatedUser | null,
+  imageBase64?: string, // VLM change: optional image for VLM models
+  activationThreshold?: number, // VLM change: optional activation threshold for under-sparse SAEs
 ) => {
   // TODO: we don't currently support search-all on different instances
   const serverHost = await getOneRandomServerHostForSourceSet(modelId, sourceSetName, user);
@@ -522,6 +532,10 @@ export const runInferenceActivationAll = async (
       sourceSet: sourceSetName,
       ignoreBos,
       numResults,
+      // VLM change: include imageBase64 if provided
+      ...(imageBase64 ? { imageBase64 } : {}),
+      // VLM change: include activationThreshold if provided
+      ...(activationThreshold !== undefined ? { activationThreshold } : {}),
     },
   });
 };

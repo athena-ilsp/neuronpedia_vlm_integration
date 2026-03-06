@@ -6,7 +6,7 @@ ARG UBUNTU_VERSION=22.04
 ARG CUSTOM_CA_BUNDLE
 
 # NON-CUDA base
-FROM python:3.10-slim AS base-nocuda
+FROM python:3.11-slim AS base-nocuda
 
 # Re-declare ARG after FROM (ARGs don't persist across FROM statements)
 ARG CUSTOM_CA_BUNDLE
@@ -70,12 +70,15 @@ ENV GIT_SSL_CAINFO=${CUSTOM_CA_BUNDLE:+/etc/ssl/certs/ca-certificates.crt}
 RUN apt-get update && apt-get install -y \
     nvidia-container-toolkit \
     && rm -rf /var/lib/apt/lists/*
-RUN apt-get update && apt-get install -y \
-    python3.10 \
-    python3-pip \
-    python3.10-venv \
-    && rm -rf /var/lib/apt/lists/* \
-    && ln -s /usr/bin/python3.10 /usr/bin/python
+RUN apt-get update && apt-get install -y wget \
+    && wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O /tmp/miniforge.sh \
+    && bash /tmp/miniforge.sh -b -p /opt/conda \
+    && rm /tmp/miniforge.sh \
+    && rm -rf /var/lib/apt/lists/*
+ENV PATH="/opt/conda/bin:${PATH}"
+RUN conda install -y python=3.11 pip \
+    && conda clean -afy \
+    && ln -sf /opt/conda/bin/python /usr/bin/python
 
 # Main build stage
 FROM base-${BUILD_TYPE:-nocuda} AS final
@@ -119,6 +122,7 @@ COPY packages/python/neuronpedia-inference-client /app/packages/python/neuronped
 
 # Copy only poetry files
 COPY apps/inference/pyproject.toml apps/inference/poetry.lock* apps/inference/
+COPY apps/inference/vendor /app/apps/inference/vendor/
 WORKDIR /app/apps/inference
 
 # Install only main dependencies

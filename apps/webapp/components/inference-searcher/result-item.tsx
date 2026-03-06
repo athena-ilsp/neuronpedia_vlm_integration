@@ -5,6 +5,16 @@ import { InferenceActivationAllResult } from '@/components/provider/inference-ac
 import { replaceHtmlAnomalies } from '@/lib/utils/activations';
 import { ExplanationPartialWithRelations } from '@/prisma/generated/zod';
 
+// VLM change: replace raw image patch token strings with human-readable labels
+function labelTokens(tokens: string[]): string[] {
+  const firstPatchIdx = tokens.findIndex((t) => t === '<image_soft_token>');
+  if (firstPatchIdx === -1) return tokens;
+  return tokens.map((t, i) => {
+    if (t === '<image_soft_token>') return `Patch_${i - firstPatchIdx + 1}`;
+    return t;
+  });
+}
+
 export default function ResultItem({
   result,
   tokens,
@@ -19,6 +29,8 @@ export default function ResultItem({
   showDashboards: boolean;
 }) {
   const { getSourceSet } = useGlobalContext();
+  // VLM change: use labeled tokens for display
+  const displayTokens = labelTokens(tokens);
   return (
     <a
       href={`/${result.modelId}/${result.layer}/${result.index}`}
@@ -75,7 +87,7 @@ export default function ResultItem({
             ) : (
               <div className="flex flex-col items-center gap-y-0.5 px-2 text-xs text-slate-700">
                 <div className="whitespace-pre rounded bg-slate-200 px-1 font-mono font-medium">
-                  {replaceHtmlAnomalies(tokens[result.maxValueIndex])}
+                  {replaceHtmlAnomalies(displayTokens[result.maxValueIndex])}
                 </div>
                 <span className="mt-0 text-[11px] text-emerald-700">{result.maxValue.toFixed(1)}</span>
               </div>
@@ -84,7 +96,7 @@ export default function ResultItem({
               showLineBreaks={false}
               activation={{
                 values: result.values,
-                tokens,
+                tokens: displayTokens,
                 maxValueTokenIndex: result.maxValueIndex,
                 maxValue: result.maxValue,
                 dfaValues: result.dfaValues,

@@ -22,7 +22,7 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import * as Select from '@radix-ui/react-select';
 import * as ToggleGroup from '@radix-ui/react-toggle-group';
 import { Form, Formik, FormikProps } from 'formik';
-import { Check, ChevronDownIcon, HelpCircle, Search } from 'lucide-react';
+import { Check, ChevronDownIcon, HelpCircle, ImagePlus, Search, X } from 'lucide-react';
 import { useRouter } from 'next-nprogress-bar';
 import { useEffect, useRef, useState } from 'react';
 import ReactTextareaAutosize from 'react-textarea-autosize';
@@ -63,6 +63,7 @@ export default function InferenceSearcher({
     setSearchResults,
     searchResults,
     setSearchCounts,
+    searchImageBase64,
   } = useInferenceActivationAllContext();
   const { getSourcesForSourceSet, getDefaultModel, globalModels } = useGlobalContext();
   const [sortIndexes, setSortIndexes] = useState<number[]>(initialSortIndexes || []);
@@ -74,6 +75,50 @@ export default function InferenceSearcher({
   const [availableLayers, setAvailableLayers] = useState<string[]>([]);
   const [showDashboards, setShowDashboards] = useState(true);
   const [needsReloadSearch, setNeedsReloadSearch] = useState(false);
+  // VLM change: image state for VLM models
+  const [imageBase64, setImageBase64] = useState<string | undefined>(undefined);
+  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | undefined>(undefined);
+  // VLM change: activation threshold for under-sparse SAEs (default 0.5)
+  const [activationThreshold, setActivationThreshold] = useState<number | undefined>(0.5);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  // VLM change: Gemma image sequence constants — 1 boi + 256 patches + 1 eoi = 258 image tokens
+  const VLM_IMAGE_SEQ_LENGTH = 256;
+  const VLM_MODELS_PREFIX = ['gemma-3-'];
+  const isVlmModel = VLM_MODELS_PREFIX.some((prefix) => modelId.startsWith(prefix));
+
+  function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const result = ev.target?.result as string;
+      setImagePreviewUrl(result);
+      setImageBase64(result.split(',')[1]);
+      setNeedsReloadSearch(true);
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function clearImage() {
+    setImageBase64(undefined);
+    setImagePreviewUrl(undefined);
+    if (imageInputRef.current) imageInputRef.current.value = '';
+    setNeedsReloadSearch(true);
+  }
+
+  // VLM change: given a token index and the tokens array, return a display label.
+  // Image patch tokens (<image_soft_token>) are labeled "Image_patch_N".
+  // <start_of_image> and <end_of_image> get their own labels.
+  function getTokenDisplayLabel(token: string, index: number): string {
+    if (token === '<image_soft_token>') {
+      // find the first image soft token index to compute patch number
+      const firstPatchIdx = tokens.findIndex((t) => t === '<image_soft_token>');
+      return `Image_patch_${index - firstPatchIdx + 1}`;
+    }
+    if (token === '<start_of_image>') return '<start_of_image>';
+    if (token === '<end_of_image>') return '<end_of_image>';
+    return replaceHtmlAnomalies(token);
+  }
   const formRef = useRef<
     FormikProps<{
       searchQuery: string;
@@ -134,23 +179,27 @@ export default function InferenceSearcher({
       alert('Please select at least one layer to search.');
       return;
     }
-    if (values.searchQuery.trim().length === 0) {
+    // VLM change: allow image-only search (no text required when image is provided)
+    if (values.searchQuery.trim().length === 0 && !imageBase64) {
       alert('Please enter a search query.');
       return;
     }
-    if (loadResultsInNewPage) {
+    // VLM change: when an image is provided, always run inline (image can't be encoded in URL)
+    if (loadResultsInNewPage && !imageBase64) {
       router.push(makeUrl(values.searchQuery));
       return;
     }
     setSearchResults([]);
     setTokens([]);
-    submitSearchAll(modelId, values.searchQuery, selectedLayers, sourceSet, ignoreBos, sortIndexes);
+    // VLM change: if image-only (no text), send empty string — inference server will prepend BOS + image
+    const queryText = values.searchQuery.trim().length === 0 ? '' : values.searchQuery;
+    submitSearchAll(modelId, queryText, selectedLayers, sourceSet, ignoreBos, sortIndexes, imageBase64, isVlmModel ? activationThreshold : undefined); // VLM change: pass image + threshold
   }
 
-  // load query if we have one
+  // load query if we have one (skip empty q — image-only searches don't use URL)
   useEffect(() => {
-    if (q !== undefined) {
-      submitSearchAll(modelId, q, selectedLayers, sourceSet, ignoreBos, sortIndexes);
+    if (q !== undefined && q !== '') {
+      submitSearchAll(modelId, q, selectedLayers, sourceSet, ignoreBos, sortIndexes, imageBase64, isVlmModel ? activationThreshold : undefined); // VLM change
       formRef.current?.setFieldValue('searchQuery', q);
     }
   }, [q]);
@@ -285,40 +334,105 @@ export default function InferenceSearcher({
               <Form
                 className={`flex w-full gap-x-1.5 gap-y-1.5 sm:max-w-screen-lg sm:flex-row ${exploreState === InferenceActivationAllState.LOADED ? 'flex-row' : 'flex-col'}`}
               >
-                <div className="mt-0 flex flex-1 flex-row gap-x-2">
-                  <ReactTextareaAutosize
-                    name="searchQuery"
-                    disabled={exploreState === InferenceActivationAllState.RUNNING}
-                    value={values.searchQuery}
-                    minRows={2}
-                    onChange={(e) => {
-                      setNeedsReloadSearch(true);
-                      if (sortIndexes.length > 0) {
-                        setSortIndexes([]);
+                <div className="mt-0 flex flex-1 flex-col gap-y-1.5">
+                  <div className="flex flex-1 flex-row gap-x-2">
+                    <ReactTextareaAutosize
+                      name="searchQuery"
+                      disabled={exploreState === InferenceActivationAllState.RUNNING}
+                      value={values.searchQuery}
+                      minRows={2}
+                      onChange={(e) => {
+                        setNeedsReloadSearch(true);
+                        if (sortIndexes.length > 0) {
+                          setSortIndexes([]);
+                        }
+                        setFieldValue('searchQuery', e.target.value);
+                      }}
+                      required
+                      placeholder={`Enter any text or sentence to search (e.g, 'I like cats!')`}
+                      className="mt-0 min-w-[10px] flex-1 resize-none rounded-md border border-slate-200 px-3 py-2 text-left font-mono text-xs font-medium text-slate-800 placeholder-slate-400 shadow-sm transition-all focus:border-sky-700 focus:outline-none focus:ring-0 disabled:bg-slate-200 sm:text-[13px]"
+                    />
+                    <Button
+                      variant="default"
+                      type="submit"
+                      disabled={
+                        // VLM change: allow search with image alone (no text required)
+                        (values.searchQuery.length === 0 && !imageBase64) ||
+                        exploreState === InferenceActivationAllState.RUNNING ||
+                        (exploreState === InferenceActivationAllState.LOADED && !needsReloadSearch)
                       }
-                      setFieldValue('searchQuery', e.target.value);
-                    }}
-                    required
-                    placeholder={`Enter any text or sentence to search (e.g, 'I like cats!')`}
-                    className="mt-0 min-w-[10px] flex-1 resize-none rounded-md border border-slate-200 px-3 py-2 text-left font-mono text-xs font-medium text-slate-800 placeholder-slate-400 shadow-sm transition-all focus:border-sky-700 focus:outline-none focus:ring-0 disabled:bg-slate-200 sm:text-[13px]"
-                  />
-                  <Button
-                    variant="default"
-                    type="submit"
-                    disabled={
-                      values.searchQuery.length === 0 ||
-                      exploreState === InferenceActivationAllState.RUNNING ||
-                      (exploreState === InferenceActivationAllState.LOADED && !needsReloadSearch)
-                    }
-                    onClick={(e) => {
-                      e.preventDefault();
-                      submitForm();
-                    }}
-                    className="group flex h-full min-w-[48px] flex-col items-center justify-center gap-y-1 overflow-hidden font-bold uppercase transition-all sm:min-w-[54px] sm:max-w-[70px] sm:text-xs"
-                  >
-                    <Search className="h-5 w-5" />
-                    <div className="block text-[9px] font-medium uppercase leading-none sm:w-24 sm:px-2">SEARCH</div>
-                  </Button>
+                      onClick={(e) => {
+                        e.preventDefault();
+                        submitForm();
+                      }}
+                      className="group flex h-full min-w-[48px] flex-col items-center justify-center gap-y-1 overflow-hidden font-bold uppercase transition-all sm:min-w-[54px] sm:max-w-[70px] sm:text-xs"
+                    >
+                      <Search className="h-5 w-5" />
+                      <div className="block text-[9px] font-medium uppercase leading-none sm:w-24 sm:px-2">SEARCH</div>
+                    </Button>
+                  </div>
+                  {/* VLM change: image upload + threshold row, only shown for VLM models */}
+                  {isVlmModel && (
+                    <div className="flex flex-row flex-wrap items-center gap-x-3 gap-y-1.5">
+                      <div className="flex flex-row items-center gap-x-2">
+                        <input
+                          ref={imageInputRef}
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={handleImageUpload}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => imageInputRef.current?.click()}
+                          className="flex flex-row items-center gap-x-1 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-50"
+                        >
+                          <ImagePlus className="h-3.5 w-3.5" />
+                          {imageBase64 ? 'Change Image' : 'Add Image'}
+                        </button>
+                        {imagePreviewUrl && (
+                          <div className="flex flex-row items-center gap-x-1.5">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src={imagePreviewUrl} alt="uploaded" className="h-8 w-8 rounded object-cover" />
+                            <button
+                              type="button"
+                              onClick={clearImage}
+                              className="flex items-center justify-center rounded-full bg-slate-200 p-0.5 hover:bg-slate-300"
+                            >
+                              <X className="h-3 w-3 text-slate-600" />
+                            </button>
+                            <span className="text-[10px] text-slate-500">
+                              Image will be decomposed into {VLM_IMAGE_SEQ_LENGTH} patch tokens
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                      {/* VLM change: activation threshold input */}
+                      <div className="flex flex-row items-center gap-x-1.5">
+                        <label className="text-[11px] font-medium text-slate-500" htmlFor="activation-threshold">
+                          Act. Threshold:
+                        </label>
+                        <input
+                          id="activation-threshold"
+                          type="number"
+                          min="0"
+                          max="100"
+                          step="0.1"
+                          value={activationThreshold ?? ''}
+                          onChange={(e) => {
+                            const val = e.target.value === '' ? undefined : parseFloat(e.target.value);
+                            setActivationThreshold(val);
+                            setNeedsReloadSearch(true);
+                          }}
+                          className="w-16 rounded border border-slate-300 bg-white px-1.5 py-1 text-center font-mono text-[11px] text-slate-700 focus:border-sky-500 focus:outline-none"
+                          placeholder="0.5"
+                        />
+                        <span className="text-[10px] text-slate-400">
+                          (hide features with max activation below this)
+                        </span>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </Form>
             )}
@@ -476,16 +590,73 @@ export default function InferenceSearcher({
                       className={`flex-1 cursor-pointer whitespace-pre rounded border px-[2px] py-0.5 font-mono text-[12px] font-medium leading-none hover:border-emerald-600 ${
                         sortIndexes.indexOf(index) !== -1
                           ? 'border-emerald-600 bg-emerald-600 text-white'
-                          : 'border-slate-300 text-slate-600'
+                          : token === '<image_soft_token>'
+                            ? 'border-sky-300 bg-sky-50 text-sky-700'
+                            : 'border-slate-300 text-slate-600'
                       }`}
                     >
-                      {replaceHtmlAnomalies(token)}
+                      {/* VLM change: label image patch tokens as Image_patch_N */}
+                      {getTokenDisplayLabel(token, index)}
                     </button>
                   </div>
                 ))}
               </div>
             </div>
           </div>
+
+          {/* VLM change: image patch grid — shown when an image was used in search */}
+          {searchImageBase64 && isVlmModel && (() => {
+            const firstPatchIdx = tokens.findIndex((t) => t === '<image_soft_token>');
+            if (firstPatchIdx === -1) return null;
+            // 16x16 grid of patches (256 = 16*16)
+            const GRID = 16;
+            return (
+              <div className="mb-4 mt-2 w-full max-w-screen-lg">
+                <div className="mb-1 text-[11px] font-medium uppercase text-slate-500">
+                  Image decomposed into {VLM_IMAGE_SEQ_LENGTH} patch tokens (click a patch to sort by it)
+                </div>
+                <div className="flex flex-row gap-x-3">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={`data:image/jpeg;base64,${searchImageBase64}`}
+                    alt="search input"
+                    className="h-32 w-32 rounded object-cover"
+                  />
+                  <div
+                    className="grid gap-[1px]"
+                    style={{ gridTemplateColumns: `repeat(${GRID}, minmax(0, 1fr))`, width: `${GRID * 18}px` }}
+                  >
+                    {Array.from({ length: VLM_IMAGE_SEQ_LENGTH }, (_, i) => {
+                      const tokenIdx = firstPatchIdx + i;
+                      const isSelected = sortIndexes.indexOf(tokenIdx) !== -1;
+                      return (
+                        <button
+                          key={i}
+                          type="button"
+                          title={`Image_patch_${i + 1} (token ${tokenIdx})`}
+                          onClick={() => {
+                            if (isSelected) {
+                              setSortIndexes(sortIndexes.filter((s) => s !== tokenIdx).toSorted());
+                            } else {
+                              setSortIndexes([...sortIndexes, tokenIdx].toSorted());
+                            }
+                          }}
+                          className={`h-[16px] w-[16px] rounded-[1px] border text-[5px] font-bold leading-none transition-colors ${
+                            isSelected
+                              ? 'border-emerald-600 bg-emerald-500 text-white'
+                              : 'border-sky-200 bg-sky-50 text-sky-400 hover:border-emerald-400 hover:bg-emerald-100'
+                          }`}
+                        >
+                          {i + 1}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
           <div className="mx-auto flex w-full flex-col items-center overscroll-contain bg-white">
             {exploreState === InferenceActivationAllState.LOADED && needsReloadSearch && (
               <div className="flex w-full flex-row items-center justify-center gap-x-3 bg-slate-200 py-2 text-[13px] text-slate-600">

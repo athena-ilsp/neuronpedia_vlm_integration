@@ -43,7 +43,7 @@ RUN apk add --no-cache libc6-compat ca-certificates openssl && \
 
 WORKDIR /app
 COPY apps/webapp/package*.json ./
-RUN npm ci
+RUN npm install
 
 ###############################################################################################
 # Rebuild the source code only when needed

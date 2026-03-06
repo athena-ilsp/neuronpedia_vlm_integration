@@ -1,5 +1,6 @@
 services:
   webapp:
+    user: "0"
     environment:
       - NODE_ENV=development
       - WATCHPACK_POLLING=true
@@ -7,4 +8,4 @@ services:
       - ../apps/webapp:/app/apps/webapp
       - ../apps/webapp/node_modules:/app/apps/webapp/node_modules
     command: >
-      sh -c "npx prisma migrate dev && npm run dev"
+      sh -c "cd /app/apps/webapp && npm run dev"

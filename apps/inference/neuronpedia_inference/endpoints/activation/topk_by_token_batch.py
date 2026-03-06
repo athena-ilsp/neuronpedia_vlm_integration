@@ -222,9 +222,15 @@ def process_topk_batch(
 
         # Apply ignore_bos if needed
         if ignore_bos:
-            str_tokens = str_tokens[1:]
-            top_k_values = top_k_values[1:]
-            top_k_indices = top_k_indices[1:]
+            template_prefix = ['<bos>', '<start_of_turn>', 'user', '\n']
+            if len(str_tokens) >= len(template_prefix) and str_tokens[:len(template_prefix)] == template_prefix:
+                str_tokens = str_tokens[len(template_prefix):]
+                top_k_values = top_k_values[len(template_prefix):]
+                top_k_indices = top_k_indices[len(template_prefix):]
+            else:
+                str_tokens = str_tokens[1:]
+                top_k_values = top_k_values[1:]
+                top_k_indices = top_k_indices[1:]
 
         # Build result for this prompt
         token_results = []

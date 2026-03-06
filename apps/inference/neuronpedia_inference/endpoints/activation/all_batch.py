@@ -197,7 +197,7 @@ class ActivationProcessor:
                     f"the given prompt, which only has {len(str_tokens)} tokens."
                 )
 
-        source_activations = self._process_sources(request, cache)
+        source_activations = self._process_sources(request, cache, str_tokens)
 
         sorted_activations = self._sort_and_filter_results(source_activations, request)
         feature_activations = self._format_result_and_calculate_dfa(
@@ -368,7 +368,7 @@ class ActivationProcessor:
                     seq_cache[key] = cache[key]
 
             # Process this prompt's activations
-            source_activations = self._process_sources(request, seq_cache)
+            source_activations = self._process_sources(request, seq_cache, str_tokens)
             sorted_activations = self._sort_and_filter_results(
                 source_activations, request
             )
@@ -458,6 +458,7 @@ class ActivationProcessor:
         self,
         request: ActivationAllBatchPostRequest,
         cache: ActivationCache,
+        str_tokens: list[str] = None,
     ) -> list[dict[str, Any]]:
         """Process activations for each selected layer."""
         sae_manager = SAEManager.get_instance()
@@ -485,6 +486,7 @@ class ActivationProcessor:
                     layer_num,
                     request.sort_by_token_indexes,
                     request.ignore_bos,
+                    str_tokens,
                 )
             )
 
@@ -514,13 +516,22 @@ class ActivationProcessor:
         layer_num: int,
         sort_by_token_indexes: list[int],
         ignore_bos: bool,
+        str_tokens: list[str] = None,
     ) -> dict[str, Any]:
         """Process activations for a single layer."""
         model = Model.get_instance()
-        if ignore_bos and (
-            isinstance(model, StandardizedTransformer) or model.cfg.default_prepend_bos
-        ):
-            activations_by_index[:, 0] = 0
+        if ignore_bos:
+            if (
+                isinstance(model, StandardizedTransformer) or model.cfg.default_prepend_bos
+            ):
+                activations_by_index[:, 0] = 0
+            
+            # VLM change: ignore chat template tokens if they are present at the start
+            if str_tokens is not None:
+                template_prefix = ['<bos>', '<start_of_turn>', 'user', '\n']
+                if len(str_tokens) >= len(template_prefix) and str_tokens[:len(template_prefix)] == template_prefix:
+                    for i in range(len(template_prefix)):
+                        activations_by_index[:, i] = 0
         max_values, max_indices = torch.max(activations_by_index, dim=1)
         layer_num_tensor = torch.full(max_values.shape, layer_num).to(
             Config.get_instance().device

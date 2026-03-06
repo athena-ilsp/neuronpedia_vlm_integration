@@ -2,11 +2,14 @@ services:
   inference:
     volumes:
       - ../apps/inference:/app/apps/inference
+      # VLM change: mount the inference client package so edits to it are live without rebuilding
+      - ../packages/python/neuronpedia-inference-client:/app/packages/python/neuronpedia-inference-client
     environment:
       - RELOAD=${RELOAD:-0}
     command: >
-      sh -c "if [ "$$RELOAD" = "1" ]; then
-        python start.py --reload;
-      else
-        python start.py;
-      fi"
+      sh -c "pip install -e /app/packages/python/neuronpedia-inference-client -q &&
+        if [ "$$RELOAD" = "1" ]; then
+          python start.py --reload;
+        else
+          python start.py;
+        fi"

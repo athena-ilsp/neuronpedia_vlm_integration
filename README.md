@@ -48,6 +48,82 @@
     - [Import Data Into Your Local Database](#import-data-into-your-local-database)
     - [Why an OpenAI API Key Is Needed for Search Explanations](#why-an-openai-api-key-is-needed-for-search-explanations)
 
+# VLM Integration for Visualizing (Gemma-3 + Custom SAEs)
+
+This fork extends Neuronpedia with support for Vision-Language Models — specifically `google/gemma-3-4b-it` with custom-trained SAEs — so that all existing Neuronpedia features (activation search, feature pages, steering, token heatmaps) work for VLMs through the existing UI with no new pages.
+
+## What is supported
+
+| Feature | Status |
+|---|---|
+| Text-only activation search | ✅ |
+| Image + text activation search | ✅ |
+| Per-layer SAE feature activations (`hook_mlp_out`) | ✅ |
+| Transcoder checkpoints (`hook_mlp_in` input) | ✅ |
+| Feature pages (activations, explanations, steering) | ✅ |
+| Activation threshold filtering (for under-sparse SAEs) | ✅ (UI input, default 0.5) |
+| Image patch token display in heatmap | ✅ |
+| GPU inference | ✅ (set `CUDA_DEVICE`) |
+
+Currently loaded: **18 SAEs** across layers 0–2, 10–13, 15–22, 24–26 of `gemma-3-4b-it`, each with 20,480 features.
+
+## Running the VLM stack
+
+```bash
+# From monorepo root — build the inference image (CPU)
+docker build --platform=linux/amd64 -t neuronpedia-inference:cpu \
+  -f apps/inference/Dockerfile --build-arg BUILD_TYPE=nocuda .
+
+# Start the full stack with VLM mounts
+docker compose \
+  -f docker/compose.yaml \
+  -f docker/compose.inference.dev.yaml \
+  -f docker/compose.inference.vlm.yaml \
+  --env-file .env.inference.gemma-3-vlm.layer10 \
+  up
+```
+
+Then open `http://localhost:3000/gemma-3-4b-it/?sourceSet=vlm-sae`.
+
+## Key environment variables
+
+| Variable | Description |
+|---|---|
+| `VLM=true` | Enable VLM mode (loads Gemma3 instead of HookedTransformer) |
+| `OVERRIDE_MODEL_ID` | HuggingFace model ID, e.g. `google/gemma-3-4b-it` |
+| `VLM_REPO_PATH` | Path to the `vlm_transcoder_circuits` repo inside the container |
+| `VLM_SAE_PATHS` | JSON dict mapping source IDs to `.pt` checkpoint paths |
+| `VLM_SAE_SET_NAME` | Source set name in the DB (default: `vlm-sae`) |
+
+See `.env.inference.gemma-3-vlm.layer10` for a full working example.
+
+## Adding a new SAE or transcoder checkpoint
+
+1. Place the `.pt` checkpoint file in the directory mounted at `/sae_weights`
+2. Add an entry to `VLM_SAE_PATHS` in your `.env` file:
+   ```
+   "15-vlm-sae": "/sae_weights/layer15.pt"
+   ```
+3. Add the layer to `SOURCES` in `apps/webapp/prisma/seed-vlm.ts`, then run:
+   ```bash
+   cd apps/webapp && npx tsx prisma/seed-vlm.ts
+   ```
+4. Restart the inference server — look for `Loaded VLM SAE: hook=language_model.model.layers.15.hook_mlp_out` in the logs
+
+For **transcoder** checkpoints, set `is_transcoder=True` in the SAE config and use `hook_mlp_in` as the hook point. The source ID convention is `"{layer}-vlm-transcoder"`.
+
+See [VLM_INTEGRATION_REPORT.md](VLM_INTEGRATION_REPORT.md) for full technical details.
+
+## TODOs
+
+- [ ] **Make activation threshold work end-to-end**
+- [ ] **Improve UI** — hide template tokens (`<start_of_turn>`, `<end_of_turn>`) from the token heatmap display; add layer comparison view; show feature activation distribution histogram; show activated image tokens in image view; make the threshold input persist in the URL.
+- [ ] **Add transcoder checkpoints** — load and visualize transcoders (MLP input → output predictors) alongside SAEs; extend the feature page to show transcoder reconstruction quality.
+- [ ] **Add circuit tracing integration** — connect the existing [circuit-tracer](https://github.com/safety-research/circuit-tracer) graph server to VLM activations so attribution graphs can be generated for Gemma-3 with image inputs.
+- [ ] **Integrate with delphi autointerp** — pipe VLM SAE feature activations through EleutherAI's [delphi](https://github.com/EleutherAI/delphi) to automatically generate and score natural-language explanations for VLM features, including multimodal ones.
+
+---
+
 # About Neuronpedia
 
 Check out our [blog post](https://www.neuronpedia.org/blog/neuronpedia-is-now-open-source) about Neuronpedia, why we're open sourcing it, and other details. There's also a [tweet thread](https://x.com/neuronpedia/status/1906793456879775745) with quick demos.

@@ -1,0 +1,9 @@
+# VLM change: mounts vlm_transcoder_circuits repo and SAE weights into the inference container
+services:
+  inference:
+    volumes:
+      # VLM change: mount the vlm_transcoder_circuits repo so vlm_hooks can be imported
+      - /home/nxiros/workspace/Neuronpedia/vlm_transcoder_circuits:/vlm_transcoder_circuits:ro
+      # VLM change: mount the directory containing your SAE .pt checkpoint files
+      # Change the left side to wherever your .pt files actually live
+      - /home/nxiros/workspace/Neuronpedia/neuronpedia/sae_weights/VLM/SAE:/sae_weights:ro

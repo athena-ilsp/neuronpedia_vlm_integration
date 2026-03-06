@@ -37,6 +37,8 @@ def parse_env_and_args():
     args.nnsight = os.getenv("NNSIGHT", "").lower() == "true"
     args.nnsight_max_memory = os.getenv("NNSIGHT_MAX_MEMORY")
     args.chatspace = os.getenv("CHATSPACE", "").lower() == "true"
+    # VLM change: flag to load HookedGemma3 VLM model instead of HookedTransformer
+    args.vlm = os.getenv("VLM", "").lower() == "true"
 
     return args
 

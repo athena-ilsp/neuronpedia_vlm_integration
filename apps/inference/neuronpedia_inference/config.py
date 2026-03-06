@@ -40,6 +40,7 @@ class Config:
         steer_special_token_ids: list[int] | None = None,
         nnsight: bool = False,
         chatspace: bool = False,
+        vlm: bool = False,  # VLM change
     ):
         self.model_id = model_id
         self.custom_hf_model_id = custom_hf_model_id
@@ -55,12 +56,17 @@ class Config:
         self.sae_sets = sae_sets
         self.include_sae_patterns = include_sae
         self.exclude_sae_patterns = exclude_sae
-        self.sae_config = self._filter_sae_config(self._generate_sae_config())
+        # VLM change: skip sae-lens directory lookup when in VLM-only mode
+        if vlm and not sae_sets:
+            self.sae_config = []
+        else:
+            self.sae_config = self._filter_sae_config(self._generate_sae_config())
         self.model_kwargs = json.loads(model_from_pretrained_kwargs)
         self.max_loaded_saes = max_loaded_saes
         self.steer_special_token_ids = steer_special_token_ids
         self.nnsight = nnsight
         self.chatspace = chatspace
+        self.vlm = vlm  # VLM change
 
         # Log configuration details after initialization
         logger.info(
@@ -79,6 +85,7 @@ class Config:
             f"  exclude_sae_patterns: {self.exclude_sae_patterns}\n"
             f"  nnsight: {self.nnsight}\n"
             f"  chatspace: {self.chatspace}\n"
+            f"  vlm: {self.vlm}\n"  # VLM change
         )
 
     def set_num_layers(self, num_layers: int) -> None:
@@ -90,7 +97,15 @@ class Config:
         self.steer_special_token_ids = steer_special_token_ids
 
     def get_valid_model_ids(self):
-        return set([sae_set["model"] for sae_set in self.sae_config])
+        # VLM change: sae_config is empty in VLM mode, so also include model_id and override_model_id
+        ids = set([sae_set["model"] for sae_set in self.sae_config])
+        if self.model_id:
+            ids.add(self.model_id)
+        if self.override_model_id:
+            ids.add(self.override_model_id)
+        if self.custom_hf_model_id:
+            ids.add(self.custom_hf_model_id)
+        return ids
 
     def _generate_sae_config(self):
         directory_df = get_saelens_neuronpedia_directory_df()

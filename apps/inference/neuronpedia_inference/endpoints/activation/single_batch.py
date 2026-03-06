@@ -355,7 +355,7 @@ def process_feature_activations(
     index: int,
     bos_indices: list[int],
 ) -> ActivationSinglePost200ResponseActivation:
-    if sae_type == "saelens-1":
+    if sae_type in ("saelens-1", "vlm"):  # VLM change: vlm SAEs expose the same encode() interface
         return process_saelens_activations(sae, cache, hook_name, index, bos_indices)
     raise ValueError(f"Unsupported SAE type: {sae_type}")
 

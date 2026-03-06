@@ -21,6 +21,13 @@ except ImportError:
     if TYPE_CHECKING:
         from chatspace.generation import VLLMSteerModel
 
+# VLM change: import adapter type
+try:
+    from neuronpedia_inference.models.vlm_model_adapter import VLMModelAdapter
+except ImportError:
+    if TYPE_CHECKING:
+        from neuronpedia_inference.models.vlm_model_adapter import VLMModelAdapter
+
 logger = logging.getLogger(__name__)
 
 request_lock = asyncio.Lock()
@@ -73,13 +80,14 @@ def with_request_lock():
 
 
 class Model:
-    _instance: "HookedTransformer | StandardizedTransformer | VLLMSteerModel"  # type: ignore  # | TransformerBridge
+    # VLM change: added VLMModelAdapter to the union type
+    _instance: "HookedTransformer | StandardizedTransformer | VLLMSteerModel | VLMModelAdapter"  # type: ignore  # | TransformerBridge
 
     @classmethod
     def get_instance(
         cls,
     ) -> (
-        "HookedTransformer | StandardizedTransformer | VLLMSteerModel"
+        "HookedTransformer | StandardizedTransformer | VLLMSteerModel | VLMModelAdapter"
     ):  # | TransformerBridge:
         if cls._instance is None:
             raise ValueError("Model not initialized")
@@ -88,7 +96,7 @@ class Model:
     @classmethod
     def set_instance(
         cls,
-        model: "HookedTransformer | StandardizedTransformer | VLLMSteerModel",  # | TransformerBridge
+        model: "HookedTransformer | StandardizedTransformer | VLLMSteerModel | VLMModelAdapter",  # | TransformerBridge
     ) -> None:
         cls._instance = model
 

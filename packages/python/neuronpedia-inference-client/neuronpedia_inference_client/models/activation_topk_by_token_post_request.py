@@ -32,7 +32,9 @@ class ActivationTopkByTokenPostRequest(BaseModel):
     source: StrictStr = Field(description="Source identifier - could be an SAE ID (eg 5-gemmascope-res-16k). Must be specified with \"index\", or not at NPActivationAllRequest.")
     top_k: Optional[StrictInt] = Field(default=None, description="The number of features to include for each token position.")
     ignore_bos: StrictBool = Field(description="Whether or not to include features whose highest activation value is the BOS token.")
-    __properties: ClassVar[List[str]] = ["prompt", "model", "source", "top_k", "ignore_bos"]
+    # VLM change: optional base64-encoded image for VLM models
+    image_base64: Optional[StrictStr] = Field(default=None, description="Base64-encoded image for VLM models.")
+    __properties: ClassVar[List[str]] = ["prompt", "model", "source", "top_k", "ignore_bos", "image_base64"]
 
     model_config = ConfigDict(
         populate_by_name=True,
@@ -89,7 +91,8 @@ class ActivationTopkByTokenPostRequest(BaseModel):
             "model": obj.get("model"),
             "source": obj.get("source"),
             "top_k": obj.get("top_k"),
-            "ignore_bos": obj.get("ignore_bos") if obj.get("ignore_bos") is not None else True
+            "ignore_bos": obj.get("ignore_bos") if obj.get("ignore_bos") is not None else True,
+            "image_base64": obj.get("image_base64"),  # VLM change
         })
         return _obj
 

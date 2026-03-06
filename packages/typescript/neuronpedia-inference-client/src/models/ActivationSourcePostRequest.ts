@@ -37,6 +37,12 @@ export interface ActivationSourcePostRequest {
      * @memberof ActivationSourcePostRequest
      */
     source: string;
+    /**
+     * VLM change: Base64-encoded image for VLM models.
+     * @type {string}
+     * @memberof ActivationSourcePostRequest
+     */
+    imageBase64?: string;
 }
 
 /**
@@ -62,6 +68,7 @@ export function ActivationSourcePostRequestFromJSONTyped(json: any, ignoreDiscri
         'prompts': json['prompts'],
         'model': json['model'],
         'source': json['source'],
+        'imageBase64': json['image_base64'] == null ? undefined : json['image_base64'],
     };
 }
 
@@ -79,6 +86,7 @@ export function ActivationSourcePostRequestToJSONTyped(value?: ActivationSourceP
         'prompts': value['prompts'],
         'model': value['model'],
         'source': value['source'],
+        'image_base64': value['imageBase64'],
     };
 }
 

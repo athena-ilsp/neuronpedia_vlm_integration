@@ -33,7 +33,9 @@ class ActivationSinglePostRequest(BaseModel):
     index: Optional[StrictStr] = Field(default=None, description="Index of the SAE. Must be specified with \"source\", or not at all.")
     vector: Optional[List[Union[StrictFloat, StrictInt]]] = Field(default=None, description="Custom vector to test activations. Must be specified with \"hook\".")
     hook: Optional[StrictStr] = Field(default=None, description="Hook that the custom vector applies to. Must be specified with \"vector\".")
-    __properties: ClassVar[List[str]] = ["prompt", "model", "source", "index", "vector", "hook"]
+    # VLM change: optional base64-encoded image for VLM models
+    image_base64: Optional[StrictStr] = Field(default=None, description="Base64-encoded image for VLM models. Only used when the server is running in VLM mode.")
+    __properties: ClassVar[List[str]] = ["prompt", "model", "source", "index", "vector", "hook", "image_base64"]
 
     model_config = ConfigDict(
         populate_by_name=True,
@@ -91,7 +93,8 @@ class ActivationSinglePostRequest(BaseModel):
             "source": obj.get("source"),
             "index": obj.get("index"),
             "vector": obj.get("vector"),
-            "hook": obj.get("hook")
+            "hook": obj.get("hook"),
+            "image_base64": obj.get("image_base64"),  # VLM change
         })
         return _obj
 

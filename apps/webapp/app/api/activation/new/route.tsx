@@ -127,7 +127,8 @@ export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
   if (!neuron.modelId || (!neuron.layer && !neuron.source) || !neuron.index) {
     throw new Error('Invalid feature.');
   }
-  if (!body.customText) {
+  // VLM change: allow image-only submissions (no text required if image is provided)
+  if (!body.customText && !body.imageBase64) {
     throw new Error('Missing custom text.');
   }
 
@@ -137,7 +138,8 @@ export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
   } catch (error) {
     return NextResponse.json({ message: error instanceof Error ? error.message : 'Unknown Error' }, { status: 500 });
   }
-  const activation = await getActivationForFeature(neuron, body.customText, request.user);
+  // VLM change: pass optional image_base64 for VLM models
+  const activation = await getActivationForFeature(neuron, body.customText, request.user, body.imageBase64);
 
   return NextResponse.json(activation);
 });

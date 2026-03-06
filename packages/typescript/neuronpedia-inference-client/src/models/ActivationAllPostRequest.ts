@@ -67,6 +67,18 @@ export interface ActivationAllPostRequest {
      * @memberof ActivationAllPostRequest
      */
     numResults?: number;
+    /**
+     * VLM change: Base64-encoded image for VLM models.
+     * @type {string}
+     * @memberof ActivationAllPostRequest
+     */
+    imageBase64?: string;
+    /**
+     * VLM change: Optional activation threshold. Features with max activation below this value are excluded.
+     * @type {number}
+     * @memberof ActivationAllPostRequest
+     */
+    activationThreshold?: number;
 }
 
 /**
@@ -100,6 +112,8 @@ export function ActivationAllPostRequestFromJSONTyped(json: any, ignoreDiscrimin
         'ignoreBos': json['ignore_bos'],
         'featureFilter': json['feature_filter'] == null ? undefined : json['feature_filter'],
         'numResults': json['num_results'] == null ? undefined : json['num_results'],
+        'imageBase64': json['image_base64'] == null ? undefined : json['image_base64'],
+        'activationThreshold': json['activation_threshold'] == null ? undefined : json['activation_threshold'],
     };
 }
 
@@ -122,6 +136,8 @@ export function ActivationAllPostRequestToJSONTyped(value?: ActivationAllPostReq
         'ignore_bos': value['ignoreBos'],
         'feature_filter': value['featureFilter'],
         'num_results': value['numResults'],
+        'image_base64': value['imageBase64'],
+        'activation_threshold': value['activationThreshold'],
     };
 }
 

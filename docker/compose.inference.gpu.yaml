@@ -5,5 +5,5 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ['${CUDA_DEVICE:-0}']
               capabilities: [gpu]

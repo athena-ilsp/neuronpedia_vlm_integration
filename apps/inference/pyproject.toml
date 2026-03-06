@@ -31,9 +31,9 @@ sentry-sdk = {extras = ["fastapi"], version = "^2.20.0"}
 nnsight = ">=0.5.15"
 hf-transfer = "^0.1.9"
 nnterp = "^1.2.2"
-neuronpedia-inference-client = {path = "../../packages/python/neuronpedia-inference-client"}
 steerllm = {path = "vendor/chatspace/steerllm", develop = true}
 chatspace = {path = "vendor/chatspace", develop = true}
+neuronpedia-inference-client = {path = "../../packages/python/neuronpedia-inference-client"}
 
 [tool.poetry.group.dev.dependencies]
 # line-profiler = "^4.1.3"

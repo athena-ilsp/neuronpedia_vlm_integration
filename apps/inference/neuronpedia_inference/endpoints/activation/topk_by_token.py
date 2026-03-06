@@ -95,6 +95,10 @@ async def activation_topk_by_token(
     #     tokens = tokens.unsqueeze(0)
     if tokens.ndim == 1:
         tokens = tokens.unsqueeze(0)
+    # VLM change: set image on model adapter if provided
+    if hasattr(model, "set_image"):
+        model.set_image(getattr(request, "image_base64", None))
+
     if isinstance(model, StandardizedTransformer):
         layer_num = get_layer_num_from_sae_id(source)
         with model.trace(tokens):
@@ -120,9 +124,15 @@ async def activation_topk_by_token(
 
     # if we are ignoring BOS and the model prepends BOS, we shift everything over by one
     if ignore_bos:
-        str_tokens = str_tokens[1:]
-        top_k_values = top_k_values[1:]
-        top_k_indices = top_k_indices[1:]
+        template_prefix = ['<bos>', '<start_of_turn>', 'user', '\n']
+        if len(str_tokens) >= len(template_prefix) and str_tokens[:len(template_prefix)] == template_prefix:
+            str_tokens = str_tokens[len(template_prefix):]
+            top_k_values = top_k_values[len(template_prefix):]
+            top_k_indices = top_k_indices[len(template_prefix):]
+        else:
+            str_tokens = str_tokens[1:]
+            top_k_values = top_k_values[1:]
+            top_k_indices = top_k_indices[1:]
 
     results = []
     for token_idx, (token, values, indices) in enumerate(

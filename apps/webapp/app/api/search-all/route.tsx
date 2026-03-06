@@ -125,8 +125,12 @@ const DEFAULT_DENSITY_THRESHOLD = -1;
 
 export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
   const body = await request.json();
-  if (body.text === undefined || body.text === null || body.text === '') {
+  // VLM change: allow empty text when an image is provided (image-only search)
+  if ((body.text === undefined || body.text === null || body.text === '') && !body.imageBase64) {
     throw new Error('Missing search text.');
+  }
+  if (body.text === undefined || body.text === null) {
+    body.text = '';
   }
 
   console.log(body);
@@ -152,6 +156,9 @@ export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
   } catch (error) {
     return NextResponse.json({ message: error instanceof Error ? error.message : 'Unknown Error' }, { status: 500 });
   }
+
+  // VLM change: image searches are never cached (imageBase64 is not part of the saved search key)
+  const isImageSearch = !!body.imageBase64;
 
   // if it's a batch search, we don't need to check savedSearch or fetch the feature
   if (Array.isArray(body.text)) {
@@ -190,8 +197,8 @@ export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
 
     return NextResponse.json({ results: batchResults });
   }
-  // see if we found this before
-  const savedSearch = await prisma.savedSearch.findUnique({
+  // see if we found this before (skip cache for image searches — imageBase64 is not part of the key)
+  const savedSearch = !isImageSearch && await prisma.savedSearch.findUnique({
     where: {
       modelId_query: {
         modelId,
@@ -285,6 +292,8 @@ export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
       sortIndexes,
       body.ignoreBos,
       request.user,
+      body.imageBase64, // VLM change: pass image for VLM models
+      body.activationThreshold, // VLM change: pass activation threshold
     )) as ActivationAllPost200Response;
 
     console.log('got activations: ', result.activations.length);
@@ -359,8 +368,8 @@ export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
     sortIndexes,
   };
 
-  // if not a cached retrieval, make savedsearch
-  if (!savedSearch && !hasMissingNeuron) {
+  // if not a cached retrieval, make savedsearch (skip for image searches)
+  if (!savedSearch && !hasMissingNeuron && !isImageSearch) {
     // look up the userid to use for creating search
     if (request.user) {
       // eslint-disable-next-line

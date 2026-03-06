@@ -41,9 +41,13 @@ export const [InferenceActivationAllContext, useInferenceActivationAllContext] =
     sourceSet: string,
     ignoreBos: boolean,
     sortIndex: number[],
+    imageBase64?: string, // VLM change: optional image for VLM models
+    activationThreshold?: number, // VLM change: optional activation threshold for under-sparse SAEs
   ) => void;
   tokens: string[];
   setTokens: React.Dispatch<React.SetStateAction<string[]>>;
+  searchImageBase64: string | undefined; // VLM change: image used in last search
+  setSearchImageBase64: React.Dispatch<React.SetStateAction<string | undefined>>;
   overallMaxValue: number;
   searchSortIndexes: number[];
   searchResults: InferenceActivationAllResult[];
@@ -63,6 +67,7 @@ export default function InferenceActivationAllProvider({ children }: { children:
   const [resultsGrid, setResultsGrid] = useState<(InferenceActivationAllResult | undefined)[][]>([]);
   const [overallMaxValue, setOverallMaxValue] = useState(-10);
   const [tokens, setTokens] = useState<string[]>([]);
+  const [searchImageBase64, setSearchImageBase64] = useState<string | undefined>(undefined); // VLM change
 
   useEffect(() => {
     if (searchResults.length > 0) {
@@ -83,12 +88,16 @@ export default function InferenceActivationAllProvider({ children }: { children:
     sourceSet: string,
     ignoreBos: boolean,
     sortIndexes: number[] = [],
+    imageBase64?: string, // VLM change: optional image for VLM models
+    activationThreshold?: number, // VLM change: optional activation threshold for under-sparse SAEs
   ) {
     if (!selectedLayers) {
       alert('Please select at least one layer to search.');
       return;
     }
     setExploreState(InferenceActivationAllState.RUNNING);
+    // VLM change: store image used in this search so UI can display patch grid
+    setSearchImageBase64(imageBase64);
     fetch(`/api/search-all`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -99,6 +108,10 @@ export default function InferenceActivationAllProvider({ children }: { children:
         sortIndexes: sortIndexes as number[],
         sourceSet,
         ignoreBos,
+        // VLM change: include imageBase64 if provided
+        ...(imageBase64 ? { imageBase64 } : {}),
+        // VLM change: include activationThreshold if provided
+        ...(activationThreshold !== undefined ? { activationThreshold } : {}),
       }),
     })
       .then((response) => response.json())
@@ -133,6 +146,8 @@ export default function InferenceActivationAllProvider({ children }: { children:
           setSearchCounts,
           resultsGrid,
           setResultsGrid,
+          searchImageBase64, // VLM change
+          setSearchImageBase64, // VLM change
         }),
         [
           exploreState,
@@ -143,6 +158,7 @@ export default function InferenceActivationAllProvider({ children }: { children:
           searchSortIndexes,
           searchCounts,
           resultsGrid,
+          searchImageBase64, // VLM change
         ],
       )}
     >

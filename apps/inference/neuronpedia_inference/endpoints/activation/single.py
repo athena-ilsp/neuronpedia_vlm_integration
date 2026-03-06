@@ -105,6 +105,11 @@ async def activation_single(
             str_tokens = [tokenizer.convert_tokens_to_string([t]) for t in str_tokens]
         else:
             str_tokens: list[str] = model.to_str_tokens(prompt, prepend_bos=prepend_bos)  # type: ignore
+
+        # VLM change: set image on model adapter if provided
+        if hasattr(model, "set_image"):
+            model.set_image(getattr(request, "image_base64", None))
+
         result = process_activations(model, source, index, tokens)
 
         # Calculate DFA if enabled
@@ -144,6 +149,9 @@ async def activation_single(
             )
 
         str_tokens: list[str] = model.to_str_tokens(prompt, prepend_bos=prepend_bos)  # type: ignore
+        # VLM change: set image on model adapter if provided
+        if hasattr(model, "set_image"):
+            model.set_image(getattr(request, "image_base64", None))
         _, cache = model.run_with_cache(tokens)
         result = process_vector_activations(vector, cache, hook, sae_manager.device)  # type: ignore
 
@@ -248,7 +256,7 @@ def process_feature_activations(
     index: int,
     bos_indices: list[int],
 ) -> ActivationSinglePost200ResponseActivation:
-    if sae_type == "saelens-1":
+    if sae_type in ("saelens-1", "vlm"):  # VLM change: vlm SAEs expose the same encode() interface
         return process_saelens_activations(sae, cache, hook_name, index, bos_indices)
     raise ValueError(f"Unsupported SAE type: {sae_type}")
 

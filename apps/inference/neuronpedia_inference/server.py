@@ -12,6 +12,11 @@ import sentry_sdk
 import torch
 from dotenv import load_dotenv
 
+# VLM change: add vlm_transcoder_circuits to path so vlm_hooks package can be imported
+_VLM_REPO_PATH = os.getenv("VLM_REPO_PATH", "/home/nxiros/workspace/Neuronpedia/vlm_transcoder_circuits")
+if _VLM_REPO_PATH and _VLM_REPO_PATH not in sys.path:
+    sys.path.insert(0, _VLM_REPO_PATH)
+
 # vLLM only available on Linux
 try:
     from chatspace.generation import VLLMSteeringConfig, VLLMSteerModel
@@ -21,6 +26,17 @@ except ImportError:
     VLLMSteeringConfig = None  # type: ignore[misc, assignment]
     VLLMSteerModel = None  # type: ignore[misc, assignment]
     VLLM_AVAILABLE = False
+
+# VLM change: use stock Gemma3ForConditionalGeneration — no hooked model needed
+try:
+    from transformers import Gemma3ForConditionalGeneration as HookedGemma3ForConditionalGeneration
+    from transformers import AutoProcessor
+
+    VLM_AVAILABLE = True
+except ImportError:
+    HookedGemma3ForConditionalGeneration = None  # type: ignore[misc, assignment]
+    AutoProcessor = None  # type: ignore[misc, assignment]
+    VLM_AVAILABLE = False
 from fastapi import APIRouter, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -218,10 +234,39 @@ async def initialize(
             max_loaded_saes=args.max_loaded_saes,
             nnsight=args.nnsight,
             chatspace=args.chatspace,
+            vlm=args.vlm,  # VLM change
         )
         Config._instance = config
 
-        if args.nnsight:
+        # VLM change: load HookedGemma3 VLM model wrapped in adapter
+        if args.vlm:
+            if not VLM_AVAILABLE:
+                raise RuntimeError(
+                    "VLM mode requires vlm_hooks package. "
+                    "Ensure vlm_transcoder_circuits is on sys.path."
+                )
+            from neuronpedia_inference.models.vlm_model_adapter import VLMModelAdapter
+
+            vlm_model_id = (
+                config.custom_hf_model_id
+                if config.custom_hf_model_id
+                else config.override_model_id
+                if config.override_model_id
+                else "google/gemma-3-4b-it"
+            )
+            logger.info("Loading VLM model: %s", vlm_model_id)
+            vlm_model = HookedGemma3ForConditionalGeneration.from_pretrained(
+                vlm_model_id,
+                torch_dtype=STR_TO_DTYPE[config.model_dtype],
+            )
+            vlm_model.to(args.device)
+            vlm_model.eval()
+
+            vlm_processor = AutoProcessor.from_pretrained(vlm_model_id)
+            model = VLMModelAdapter(vlm_model, vlm_processor)
+            logger.info("VLM model loaded and wrapped in adapter")
+
+        elif args.nnsight:
             logger.info("Loading model with nnterp...")
 
             model_to_load = (
@@ -325,6 +370,7 @@ async def initialize(
         elif VLLM_AVAILABLE and isinstance(model, VLLMSteerModel):
             config.set_num_layers(model.layer_count)
         else:
+            # VLM change: VLMModelAdapter also has model.cfg.n_layers
             config.set_num_layers(model.cfg.n_layers)
 
         if model.tokenizer:

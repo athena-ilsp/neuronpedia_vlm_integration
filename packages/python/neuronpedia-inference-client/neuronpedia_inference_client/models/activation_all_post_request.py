@@ -35,7 +35,11 @@ class ActivationAllPostRequest(BaseModel):
     ignore_bos: StrictBool = Field(description="Whether or not to include features whose highest activation value is the BOS token.")
     feature_filter: Optional[List[StrictInt]] = Field(default=None, description="Optional. If specified, will only return features that match the indexes specified. Can only be used if we're testing just one SAE (\"selected_sources\" length = 1).")
     num_results: Optional[StrictInt] = Field(default=25, description="Optional. The number of top features to return.")
-    __properties: ClassVar[List[str]] = ["prompt", "model", "source_set", "selected_sources", "sort_by_token_indexes", "ignore_bos", "feature_filter", "num_results"]
+    # VLM change: optional base64-encoded image for VLM models
+    image_base64: Optional[StrictStr] = Field(default=None, description="Base64-encoded image for VLM models.")
+    # VLM change: optional activation threshold — features with max activation below this value are excluded
+    activation_threshold: Optional[float] = Field(default=None, description="Optional. Features with max activation below this threshold are excluded from results. Default 0.5 for VLM SAEs trained with l1 (not top-k).")
+    __properties: ClassVar[List[str]] = ["prompt", "model", "source_set", "selected_sources", "sort_by_token_indexes", "ignore_bos", "feature_filter", "num_results", "image_base64", "activation_threshold"]
 
     model_config = ConfigDict(
         populate_by_name=True,
@@ -95,7 +99,9 @@ class ActivationAllPostRequest(BaseModel):
             "sort_by_token_indexes": obj.get("sort_by_token_indexes"),
             "ignore_bos": obj.get("ignore_bos") if obj.get("ignore_bos") is not None else True,
             "feature_filter": obj.get("feature_filter"),
-            "num_results": obj.get("num_results") if obj.get("num_results") is not None else 25
+            "num_results": obj.get("num_results") if obj.get("num_results") is not None else 25,
+            "image_base64": obj.get("image_base64"),  # VLM change
+            "activation_threshold": obj.get("activation_threshold"),  # VLM change
         })
         return _obj
 
