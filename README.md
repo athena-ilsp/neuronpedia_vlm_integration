@@ -54,14 +54,15 @@ This fork extends Neuronpedia with support for Vision-Language Models — specif
 
 ## What is supported
 
-
+| Supported Features |
+| :--- |
 | Text-only activation search |
 | Image + text activation search |
 | Per-layer SAE feature activations (`hook_mlp_out`) |
 | Transcoder checkpoints (`hook_mlp_in` input) |
 | Feature pages (activations, explanations, steering) |
 | Image patch token display in heatmap |
-| GPU inference | ✅ (set `CUDA_DEVICE`) |
+| GPU inference ✅ (set `CUDA_DEVICE`) |
 
 ## Running the VLM stack
 
