@@ -54,18 +54,14 @@ This fork extends Neuronpedia with support for Vision-Language Models — specif
 
 ## What is supported
 
-| Feature | Status |
-|---|---|
-| Text-only activation search | ✅ |
-| Image + text activation search | ✅ |
-| Per-layer SAE feature activations (`hook_mlp_out`) | ✅ |
-| Transcoder checkpoints (`hook_mlp_in` input) | ✅ |
-| Feature pages (activations, explanations, steering) | ✅ |
-| Activation threshold filtering (for under-sparse SAEs) | ✅ (UI input, default 0.5) |
-| Image patch token display in heatmap | ✅ |
-| GPU inference | ✅ (set `CUDA_DEVICE`) |
 
-Currently loaded: **18 SAEs** across layers 0–2, 10–13, 15–22, 24–26 of `gemma-3-4b-it`, each with 20,480 features.
+| Text-only activation search |
+| Image + text activation search |
+| Per-layer SAE feature activations (`hook_mlp_out`) |
+| Transcoder checkpoints (`hook_mlp_in` input) |
+| Feature pages (activations, explanations, steering) |
+| Image patch token display in heatmap |
+| GPU inference | ✅ (set `CUDA_DEVICE`) |
 
 ## Running the VLM stack
 
