@@ -15,7 +15,8 @@ import * as yup from 'yup';
 const MAX_TOKENIZE_CHARS = 10000;
 
 const tokenizeRequestSchema = yup.object({
-  prompt: yup.string().max(MAX_TOKENIZE_CHARS).min(1).required(),
+  prompt: yup.string().max(MAX_TOKENIZE_CHARS).default(''),
+  imageBase64: yup.string().optional(),
   modelId: yup.string().min(1).required().oneOf(GRAPH_GENERATION_ENABLED_MODELS),
   sourceSetName: yup.string().nullable(),
   maxNLogits: yup
@@ -64,6 +65,7 @@ export async function POST(request: Request) {
       validatedData.desiredLogitProb,
       validatedData.modelId,
       validatedData.sourceSetName,
+      validatedData.imageBase64,
     );
 
     // console.log('tokenizedResponse', tokenizedResponse);

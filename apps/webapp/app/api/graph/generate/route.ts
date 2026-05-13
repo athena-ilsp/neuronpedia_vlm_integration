@@ -189,6 +189,7 @@ export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
         validatedData.desiredLogitProb,
         validatedData.modelId,
         validatedData.sourceSetName,
+        validatedData.imageBase64,
       );
       if (tokenized.input_tokens.length > GRAPH_MAX_TOKENS) {
         return NextResponse.json(
@@ -216,7 +217,8 @@ export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
       // remove "user" and "assistant", and "system"
       const promptReplaced2 = promptReplaced.replace(/user|assistant|system/g, '');
       // keeping only alphanumeric characters, and keeping only the first 16 characters
-      const slug = promptReplaced2.replace(/[^a-zA-Z0-9_-]/g, '').substring(0, 16);
+      const fallbackPrompt = promptReplaced2 || "image-generation";
+      const slug = fallbackPrompt.replace(/[^a-zA-Z0-9_-]/g, '').substring(0, 16);
       // append the current epoch time
       const timestamp = Date.now();
       validatedData.slug = `${slug}-${timestamp}`.toLowerCase();
@@ -260,6 +262,9 @@ export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
         accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
         secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
       },
+      ...(process.env.AWS_ENDPOINT_URL
+        ? { endpoint: process.env.AWS_ENDPOINT_URL, forcePathStyle: true }
+        : {}),
     });
 
     // Create the command for putting an object
@@ -306,6 +311,8 @@ export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
       validatedData.maxFeatureNodes,
       signedUrl,
       userName || 'Anonymous (CT)',
+      validatedData.imageBase64,
+      (validatedData as any).topKPerPosition,
     );
 
     // download the file from S3

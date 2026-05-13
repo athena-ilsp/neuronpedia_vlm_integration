@@ -220,7 +220,7 @@ export function GraphProvider({
     hoveredCtxIdx: null,
     clickedCtxIdx: null,
     linkType: 'both',
-    isShowAllLinks: '',
+    isShowAllLinks: '1',
     isSyncEnabled: '',
     subgraph: null,
     isEditMode: 1,
@@ -607,8 +607,14 @@ export function GraphProvider({
       throw new Error(`Graph not found for ${graphSlug}`);
     }
 
+    // Rewrite docker-internal MinIO hostname to a browser-reachable URL for local dev.
+    // Override via NEXT_PUBLIC_MINIO_BROWSER_URL (e.g. http://borges:9000) when the browser
+    // runs on a different machine than the server.
+    const minioBrowserUrl = process.env.NEXT_PUBLIC_MINIO_BROWSER_URL || 'http://localhost:9000';
+    const browserUrl = graph.url.replace('http://neuronpedia-minio:9000', minioBrowserUrl);
+
     // First, get the file size using a HEAD request
-    const headResponse = await fetch(graph.url, { method: 'HEAD', signal: abortSignal });
+    const headResponse = await fetch(browserUrl, { method: 'HEAD', signal: abortSignal });
     const contentLength = headResponse.headers.get('content-length');
     const fileSizeInMB = contentLength ? (parseInt(contentLength, 10) / (1024 * 1024)).toFixed(2) : 'unknown';
 
@@ -618,7 +624,7 @@ export function GraphProvider({
       throw new Error('Request cancelled before main graph fetch');
     }
 
-    const response = await fetch(graph.url, { signal: abortSignal });
+    const response = await fetch(browserUrl, { signal: abortSignal });
 
     if (!response.ok) {
       throw new Error(`Failed to fetch graph data for ${graphSlug}`);

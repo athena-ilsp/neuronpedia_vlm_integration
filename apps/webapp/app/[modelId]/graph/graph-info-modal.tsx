@@ -134,14 +134,46 @@ export default function GraphInfoModal({ cltGraph, selectedMetadataGraph }: Grap
               </div>
               <div>
                 <div className="mt-1 flex flex-wrap gap-1">
-                  {metadata.prompt_tokens.map((token, i) => (
-                    <span
-                      key={`${token}-${i}`}
-                      className="mx-[1px] mb-1 rounded bg-slate-200 px-[2px] py-0.5 font-mono text-[11px] text-slate-800"
-                    >
-                      {token.replaceAll('\n', '⏎').replaceAll(' ', '\u00A0')}
-                    </span>
-                  ))}
+                  {(() => {
+                    // VLM: collapse runs of <image_soft_token> into a single chip.
+                    const IMG_PLACEHOLDER = '<image_soft_token>';
+                    type Entry = { token: string; runLength: number };
+                    const collapsed: Entry[] = [];
+                    let _i = 0;
+                    while (_i < metadata.prompt_tokens.length) {
+                      const _t = metadata.prompt_tokens[_i];
+                      if (_t === IMG_PLACEHOLDER) {
+                        let _n = 0;
+                        while (
+                          _i + _n < metadata.prompt_tokens.length &&
+                          metadata.prompt_tokens[_i + _n] === IMG_PLACEHOLDER
+                        ) {
+                          _n += 1;
+                        }
+                        collapsed.push({ token: IMG_PLACEHOLDER, runLength: _n });
+                        _i += _n;
+                      } else {
+                        collapsed.push({ token: _t, runLength: 1 });
+                        _i += 1;
+                      }
+                    }
+                    return collapsed.map((entry, i) => {
+                      const isImageRun = entry.token === IMG_PLACEHOLDER;
+                      return (
+                        <span
+                          key={`${entry.token}-${i}`}
+                          className={`mx-[1px] mb-1 rounded px-[2px] py-0.5 font-mono text-[11px] ${
+                            isImageRun ? 'bg-sky-100 text-sky-700' : 'bg-slate-200 text-slate-800'
+                          }`}
+                          title={isImageRun ? `${entry.runLength} image patch tokens` : undefined}
+                        >
+                          {isImageRun
+                            ? `<image_tokens × ${entry.runLength}>`
+                            : entry.token.replaceAll('\n', '⏎').replaceAll(' ', '\u00A0')}
+                        </span>
+                      );
+                    });
+                  })()}
                 </div>
               </div>
             </div>

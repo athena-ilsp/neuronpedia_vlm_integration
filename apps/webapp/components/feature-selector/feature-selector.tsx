@@ -59,7 +59,7 @@ export default function FeatureSelector({
 
   const modelIdChanged = (newModelId: string) => {
     setModelId(newModelId);
-    const newSourceSet = getSourceSetsForModelId(newModelId, filterToPublic)?.[0].name;
+    const newSourceSet = getSourceSetsForModelId(newModelId, filterToPublic)?.[0]?.name;
     setSourceSet(newSourceSet);
     setSource(getFirstSourceForSourceSet(newModelId, newSourceSet));
   };

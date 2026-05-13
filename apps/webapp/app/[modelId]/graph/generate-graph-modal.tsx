@@ -61,6 +61,8 @@ interface FormValues {
   maxFeatureNodes: number;
   sourceSetName: string;
   slug: string;
+  imageBase64?: string;
+  topKPerPosition?: number;
 }
 
 interface GenerateGraphResponse {
@@ -78,18 +80,20 @@ const FormikValuesObserver: React.FC<{
   sourceSetName: string;
   maxNLogits: number;
   desiredLogitProb: number;
+  imageBase64?: string;
   debouncedTokenize: (
     modelId: string,
     prompt: string,
     sourceSetName: string,
     maxNLogits: number,
     desiredLogitProb: number,
+    imageBase64?: string,
   ) => void;
   // eslint-disable-next-line
-}> = ({ prompt, modelId, sourceSetName, maxNLogits, desiredLogitProb, debouncedTokenize }) => {
+}> = ({ prompt, modelId, sourceSetName, maxNLogits, desiredLogitProb, imageBase64, debouncedTokenize }) => {
   useEffect(() => {
-    debouncedTokenize(modelId, prompt, sourceSetName, maxNLogits, desiredLogitProb);
-  }, [prompt, modelId, maxNLogits, desiredLogitProb, debouncedTokenize]);
+    debouncedTokenize(modelId, prompt, sourceSetName, maxNLogits, desiredLogitProb, imageBase64);
+  }, [prompt, modelId, maxNLogits, desiredLogitProb, imageBase64, debouncedTokenize]);
 
   return null;
 };
@@ -125,10 +129,39 @@ export default function GenerateGraphModal({ showGenerateModal }: { showGenerate
   const [countdownTime, setCountdownTime] = useState<number | null>(null);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [chatPrompts, setChatPrompts] = useState<ChatMessage[]>([]);
+  const [imageBase64, setImageBase64] = useState<string | undefined>(undefined);
+  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | undefined>(undefined);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const VLM_IMAGE_SEQ_LENGTH = 256;
 
   const session = useSession();
   const { setSignInModalOpen, getHasGraphsSourceSetsForModelId } = useGlobalContext();
   const formikRef = useRef<FormikProps<FormValues>>(null);
+
+  function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const result = ev.target?.result as string;
+      setImagePreviewUrl(result);
+      const base64Data = result.split(',')[1];
+      setImageBase64(base64Data);
+      if (formikRef.current) {
+        formikRef.current.setFieldValue('imageBase64', base64Data);
+      }
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function clearImage() {
+    setImageBase64(undefined);
+    setImagePreviewUrl(undefined);
+    if (imageInputRef.current) imageInputRef.current.value = '';
+    if (formikRef.current) {
+      formikRef.current.setFieldValue('imageBase64', undefined);
+    }
+  }
 
   useEffect(() => {
     if (showGenerateModal) {
@@ -146,6 +179,8 @@ export default function GenerateGraphModal({ showGenerateModal }: { showGenerate
     edgeThreshold: GRAPH_EDGETHRESHOLD_DEFAULT,
     maxFeatureNodes: GRAPH_MAXFEATURENODES_DEFAULT,
     slug: '',
+    imageBase64: undefined,
+    topKPerPosition: 0,
   };
 
   // these are used for custom UI elements for instruct models
@@ -269,8 +304,8 @@ export default function GenerateGraphModal({ showGenerateModal }: { showGenerate
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const debouncedTokenize = useCallback(
     _.debounce(
-      async (modelId: string, prompt: string, sourceSetName: string, maxNLogits: number, desiredLogitProb: number) => {
-        if (!prompt.trim() || !modelId) {
+      async (modelId: string, prompt: string, sourceSetName: string, maxNLogits: number, desiredLogitProb: number, optionalImageBase64?: string) => {
+        if ((!prompt.trim() && !optionalImageBase64) || !modelId) {
           setGraphTokenizeResponse(null);
           setEstimatedTime(null);
           setIsTokenizing(false);
@@ -298,6 +333,7 @@ export default function GenerateGraphModal({ showGenerateModal }: { showGenerate
               sourceSetName,
               maxNLogits,
               desiredLogitProb,
+              imageBase64: optionalImageBase64,
             }),
           });
           if (!response.ok) {
@@ -438,6 +474,7 @@ export default function GenerateGraphModal({ showGenerateModal }: { showGenerate
         setChatPrompts([]);
         setEstimatedTime(null);
         setError(null);
+        clearImage();
         if (formikRef.current) {
           formikRef.current.resetForm();
         }
@@ -560,6 +597,7 @@ export default function GenerateGraphModal({ showGenerateModal }: { showGenerate
                   sourceSetName={values.sourceSetName}
                   maxNLogits={values.maxNLogits}
                   desiredLogitProb={values.desiredLogitProb}
+                  imageBase64={values.imageBase64}
                   debouncedTokenize={debouncedTokenize}
                 />
 
@@ -840,6 +878,49 @@ export default function GenerateGraphModal({ showGenerateModal }: { showGenerate
                                 {errors.maxFeatureNodes && touched.maxFeatureNodes && (
                                   <p className="mt-1 text-xs text-red-500">{errors.maxFeatureNodes}</p>
                                 )}
+                              </div>
+
+                              {/* Top K Per Position (mimics inference search top-K filter) */}
+                              <div>
+                                <Label
+                                  htmlFor="topKPerPosition"
+                                  className="h-6 w-32 border-slate-300 px-0 text-left text-slate-500 md:text-[11px]"
+                                >
+                                  Top K Per Token
+                                </Label>
+                                <div className="mt-0.5 flex items-center space-x-2">
+                                  <Input
+                                    id="topKPerPosition"
+                                    name="topKPerPosition"
+                                    type="number"
+                                    value={values.topKPerPosition ?? 0}
+                                    onChange={handleChange}
+                                    onBlur={handleBlur}
+                                    disabled={isGenerating}
+                                    className="h-6 w-12 border-slate-300 px-0 text-center text-slate-600 md:text-[11px]"
+                                    min={0}
+                                    max={500}
+                                    step={1}
+                                  />
+                                  <RadixSlider.Root
+                                    name="topKPerPosition"
+                                    value={[values.topKPerPosition ?? 0]}
+                                    onValueChange={(newVal: number[]) => setFieldValue('topKPerPosition', newVal[0])}
+                                    min={0}
+                                    max={100}
+                                    disabled={isGenerating}
+                                    step={1}
+                                    className="relative flex h-4 w-full flex-1 touch-none select-none items-center"
+                                  >
+                                    <RadixSlider.Track className="relative h-1.5 w-full flex-grow overflow-hidden rounded-full bg-slate-200">
+                                      <RadixSlider.Range className="absolute h-full rounded-full bg-sky-600" />
+                                    </RadixSlider.Track>
+                                    <RadixSlider.Thumb className="block h-4 w-4 rounded-full border-2 border-sky-600 bg-white shadow transition-colors focus:outline-none focus:ring-2 focus:ring-sky-500 focus:ring-offset-2 disabled:pointer-events-none disabled:opacity-50" />
+                                  </RadixSlider.Root>
+                                </div>
+                                <p className="mt-1 text-[10px] text-slate-400">
+                                  Keep only top-K most-active features per token (0 = no filter, like inference search top-K).
+                                </p>
                               </div>
                             </div>
                           </div>
@@ -1139,6 +1220,45 @@ export default function GenerateGraphModal({ showGenerateModal }: { showGenerate
                               onBlur={handleBlur}
                               type="hidden"
                             />
+                            {/* VLM change: image upload */}
+                            <div className="mb-2 mt-2 flex flex-row items-center gap-x-2">
+                              <input
+                                ref={imageInputRef}
+                                type="file"
+                                accept="image/*"
+                                className="hidden"
+                                onChange={handleImageUpload}
+                              />
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => imageInputRef.current?.click()}
+                                disabled={isGenerating}
+                                className="flex h-8 items-center gap-x-1 px-2 text-[11px]"
+                              >
+                                {imageBase64 ? 'Change Image' : 'Add Image'}
+                              </Button>
+                              {imagePreviewUrl && (
+                                <div className="flex flex-row items-center gap-x-2">
+                                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                                  <img src={imagePreviewUrl} alt="uploaded" className="h-8 w-8 rounded object-cover" />
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={clearImage}
+                                    disabled={isGenerating}
+                                    className="h-8 px-2 text-[11px] text-red-500 hover:text-red-700"
+                                  >
+                                    Remove
+                                  </Button>
+                                  <span className="text-[10px] text-slate-500">
+                                    Adds {VLM_IMAGE_SEQ_LENGTH} patch tokens
+                                  </span>
+                                </div>
+                              )}
+                            </div>
                             <div className="mb-3 mt-2 flex flex-col gap-y-1">
                               {chatPrompts.map((prompt, index) => (
                                 <div
@@ -1267,32 +1387,59 @@ export default function GenerateGraphModal({ showGenerateModal }: { showGenerate
                             </div>
                             <div className="">
                               {(() => {
-                                const tokenGroups: string[][] = [];
-                                let currentGroup: string[] = [];
+                                // VLM: collapse runs of <image_soft_token> into a single chip.
+                                const IMG_PLACEHOLDER = '<image_soft_token>';
+                                type Entry = { token: string; runLength: number };
+                                const collapsed: Entry[] = [];
+                                let _i = 0;
+                                while (_i < graphTokenizeResponse.input_tokens.length) {
+                                  const _t = graphTokenizeResponse.input_tokens[_i];
+                                  if (_t === IMG_PLACEHOLDER) {
+                                    let _n = 0;
+                                    while (
+                                      _i + _n < graphTokenizeResponse.input_tokens.length &&
+                                      graphTokenizeResponse.input_tokens[_i + _n] === IMG_PLACEHOLDER
+                                    ) {
+                                      _n += 1;
+                                    }
+                                    collapsed.push({ token: IMG_PLACEHOLDER, runLength: _n });
+                                    _i += _n;
+                                  } else {
+                                    collapsed.push({ token: _t, runLength: 1 });
+                                    _i += 1;
+                                  }
+                                }
 
-                                graphTokenizeResponse.input_tokens.forEach((token) => {
-                                  currentGroup.push(token);
-                                  if (/\n/.test(token)) {
+                                const tokenGroups: Entry[][] = [];
+                                let currentGroup: Entry[] = [];
+                                collapsed.forEach((entry) => {
+                                  currentGroup.push(entry);
+                                  if (/\n/.test(entry.token)) {
                                     tokenGroups.push(currentGroup);
                                     currentGroup = [];
                                   }
                                 });
-
-                                if (currentGroup.length > 0) {
-                                  tokenGroups.push(currentGroup);
-                                }
+                                if (currentGroup.length > 0) tokenGroups.push(currentGroup);
 
                                 return tokenGroups.map((group, groupIdx) => (
                                   <div key={groupIdx} className="flex flex-wrap">
-                                    {group.map((t, idx) => (
-                                      <span
-                                        key={`${t}-${groupIdx}-${idx}`}
-                                        className="mx-0.5 my-0.5 rounded bg-slate-200 px-[5px] py-[1px] font-mono text-[10px] text-slate-700"
-                                      >
-                                        {t.toString().replaceAll(' ', '\u00A0').replaceAll('\n', '↵')}
-                                      </span>
-                                    ))}
-                                    {/\n/.test(group[group.length - 1]) && <br />}
+                                    {group.map((entry, idx) => {
+                                      const isImageRun = entry.token === IMG_PLACEHOLDER;
+                                      return (
+                                        <span
+                                          key={`${entry.token}-${groupIdx}-${idx}`}
+                                          className={`mx-0.5 my-0.5 rounded px-[5px] py-[1px] font-mono text-[10px] ${
+                                            isImageRun ? 'bg-sky-100 text-sky-700' : 'bg-slate-200 text-slate-700'
+                                          }`}
+                                          title={isImageRun ? `${entry.runLength} image patch tokens` : undefined}
+                                        >
+                                          {isImageRun
+                                            ? `<image_tokens × ${entry.runLength}>`
+                                            : entry.token.toString().replaceAll(' ', '\u00A0').replaceAll('\n', '↵')}
+                                        </span>
+                                      );
+                                    })}
+                                    {/\n/.test(group[group.length - 1].token) && <br />}
                                   </div>
                                 ));
                               })()}

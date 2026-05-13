@@ -8,6 +8,7 @@ import { useSearchParams } from 'next/navigation';
 import GraphFeatureDetail from './feature-detail';
 import GenerateGraphModal from './generate-graph-modal';
 import GraphToolbar from './graph-toolbar';
+import ImagePatchStrip from './image-patch-strip';
 import LinkGraph from './link-graph';
 import CopyModal from './modals/copy-modal';
 import LoadSubgraphModal from './modals/load-subgraph-modal';
@@ -49,6 +50,8 @@ export default function GraphWrapper({ hasSlug, showGenerateModal }: { hasSlug: 
                   <LinkGraph />
                   <GraphNodeConnections />
                 </div>
+                {/* VLM: image strip only renders when graph metadata has image_input */}
+                <ImagePatchStrip />
                 <div className="relative flex h-[50%] w-full flex-row pb-1 pt-1">
                   <div className="w-full sm:w-[53%] sm:min-w-[53%] sm:max-w-[53%]">
                     <Subgraph />

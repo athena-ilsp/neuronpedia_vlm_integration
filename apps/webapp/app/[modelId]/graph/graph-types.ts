@@ -49,11 +49,22 @@ export type CltVisState = {
   // only for neuronpedia dashboards
   densityThreshold?: number;
 };
+// VLM extension: when graph was generated from an image prompt, this contains the source
+// image and the positions of image-placeholder tokens so the viewer can render thumbnails.
+export type CLTGraphImageInput = {
+  image_base64: string;
+  image_token_id: number;
+  image_positions: number[];
+  grid_rows: number;
+  grid_cols: number;
+};
+
 export type CLTGraphInnerMetadata = {
   slug: string;
   scan: string;
   prompt_tokens: string[];
   prompt: string;
+  image_input?: CLTGraphImageInput;
 
   // dynamic pruning - mntss/hanna
   // default value for cltVisState.pruningThreshold

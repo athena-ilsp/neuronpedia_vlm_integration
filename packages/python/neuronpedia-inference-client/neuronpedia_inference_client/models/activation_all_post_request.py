@@ -37,9 +37,9 @@ class ActivationAllPostRequest(BaseModel):
     num_results: Optional[StrictInt] = Field(default=25, description="Optional. The number of top features to return.")
     # VLM change: optional base64-encoded image for VLM models
     image_base64: Optional[StrictStr] = Field(default=None, description="Base64-encoded image for VLM models.")
-    # VLM change: optional activation threshold — features with max activation below this value are excluded
-    activation_threshold: Optional[float] = Field(default=None, description="Optional. Features with max activation below this threshold are excluded from results. Default 0.5 for VLM SAEs trained with l1 (not top-k).")
-    __properties: ClassVar[List[str]] = ["prompt", "model", "source_set", "selected_sources", "sort_by_token_indexes", "ignore_bos", "feature_filter", "num_results", "image_base64", "activation_threshold"]
+    # VLM change: top-k features per token — keep only the top K activated features per token, zero the rest
+    top_k: Optional[int] = Field(default=None, description="Optional. For each token, keep only the top K most activated features and zero out the rest.")
+    __properties: ClassVar[List[str]] = ["prompt", "model", "source_set", "selected_sources", "sort_by_token_indexes", "ignore_bos", "feature_filter", "num_results", "image_base64", "top_k"]
 
     model_config = ConfigDict(
         populate_by_name=True,
@@ -101,7 +101,7 @@ class ActivationAllPostRequest(BaseModel):
             "feature_filter": obj.get("feature_filter"),
             "num_results": obj.get("num_results") if obj.get("num_results") is not None else 25,
             "image_base64": obj.get("image_base64"),  # VLM change
-            "activation_threshold": obj.get("activation_threshold"),  # VLM change
+            "top_k": obj.get("top_k"),  # VLM change
         })
         return _obj
 

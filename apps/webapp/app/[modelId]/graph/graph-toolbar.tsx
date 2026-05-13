@@ -380,14 +380,46 @@ export default function GraphToolbar() {
                 <Select.Value asChild>
                   <div className="flex w-full flex-col items-start justify-start gap-y-[7px] overflow-y-visible">
                     <div className="text-overflow-ellipsis whitespace-nowrap text-[10px] font-normal leading-none text-slate-500">
-                      {selectedMetadataGraph.promptTokens.map((token, i) => (
-                        <span
-                          key={`${token}-${i}`}
-                          className="mx-0.5 rounded bg-slate-100 px-[3px] py-0.5 font-mono text-slate-700"
-                        >
-                          {token.replaceAll('\n', '↵').replaceAll(' ', '\u00A0')}
-                        </span>
-                      ))}
+                      {(() => {
+                        // VLM: collapse runs of <image_soft_token> into a single chip.
+                        const IMG_PLACEHOLDER = '<image_soft_token>';
+                        type Entry = { token: string; runLength: number };
+                        const collapsed: Entry[] = [];
+                        let _i = 0;
+                        while (_i < selectedMetadataGraph.promptTokens.length) {
+                          const _t = selectedMetadataGraph.promptTokens[_i];
+                          if (_t === IMG_PLACEHOLDER) {
+                            let _n = 0;
+                            while (
+                              _i + _n < selectedMetadataGraph.promptTokens.length &&
+                              selectedMetadataGraph.promptTokens[_i + _n] === IMG_PLACEHOLDER
+                            ) {
+                              _n += 1;
+                            }
+                            collapsed.push({ token: IMG_PLACEHOLDER, runLength: _n });
+                            _i += _n;
+                          } else {
+                            collapsed.push({ token: _t, runLength: 1 });
+                            _i += 1;
+                          }
+                        }
+                        return collapsed.map((entry, i) => {
+                          const isImageRun = entry.token === IMG_PLACEHOLDER;
+                          return (
+                            <span
+                              key={`${entry.token}-${i}`}
+                              className={`mx-0.5 rounded px-[3px] py-0.5 font-mono ${
+                                isImageRun ? 'bg-sky-100 text-sky-700' : 'bg-slate-100 text-slate-700'
+                              }`}
+                              title={isImageRun ? `${entry.runLength} image patch tokens` : undefined}
+                            >
+                              {isImageRun
+                                ? `<image_tokens × ${entry.runLength}>`
+                                : entry.token.replaceAll('\n', '↵').replaceAll(' ', '\u00A0')}
+                            </span>
+                          );
+                        });
+                      })()}
                     </div>
                     <div className="flex w-full flex-row items-center justify-between">
                       <div className="flex-1 whitespace-pre text-left font-mono text-[10px] font-medium text-sky-700">
@@ -476,14 +508,48 @@ export default function GraphToolbar() {
                               </div>
                               <div className="mt-2 w-full whitespace-pre-line pl-0 text-[10px] leading-tight text-slate-500">
                                 <div className="flex flex-wrap">
-                                  {graph.promptTokens.map((token, i) => (
-                                    <Fragment key={`${token}-${i}`}>
-                                      <span className="mx-[1px] mb-1 rounded bg-slate-100 px-[2px] py-0.5 font-mono text-slate-700 group-hover:bg-sky-200 group-hover:text-sky-700 group-data-[highlighted]:bg-sky-200 group-data-[highlighted]:text-sky-700">
-                                        {token.replaceAll(' ', '\u00A0').replaceAll('\n', '↵')}
-                                      </span>
-                                      {(token === '⏎' || token === '⏎⏎') && <div className="w-full" />}
-                                    </Fragment>
-                                  ))}
+                                  {(() => {
+                                    // VLM: collapse runs of <image_soft_token> into a single chip.
+                                    const IMG_PLACEHOLDER = '<image_soft_token>';
+                                    type Entry = { token: string; runLength: number };
+                                    const collapsed: Entry[] = [];
+                                    let _i = 0;
+                                    while (_i < graph.promptTokens.length) {
+                                      const _t = graph.promptTokens[_i];
+                                      if (_t === IMG_PLACEHOLDER) {
+                                        let _n = 0;
+                                        while (
+                                          _i + _n < graph.promptTokens.length &&
+                                          graph.promptTokens[_i + _n] === IMG_PLACEHOLDER
+                                        ) {
+                                          _n += 1;
+                                        }
+                                        collapsed.push({ token: IMG_PLACEHOLDER, runLength: _n });
+                                        _i += _n;
+                                      } else {
+                                        collapsed.push({ token: _t, runLength: 1 });
+                                        _i += 1;
+                                      }
+                                    }
+                                    return collapsed.map((entry, i) => {
+                                      const isImageRun = entry.token === IMG_PLACEHOLDER;
+                                      return (
+                                        <Fragment key={`${entry.token}-${i}`}>
+                                          <span
+                                            className={`mx-[1px] mb-1 rounded px-[2px] py-0.5 font-mono group-hover:bg-sky-200 group-hover:text-sky-700 group-data-[highlighted]:bg-sky-200 group-data-[highlighted]:text-sky-700 ${
+                                              isImageRun ? 'bg-sky-100 text-sky-700' : 'bg-slate-100 text-slate-700'
+                                            }`}
+                                            title={isImageRun ? `${entry.runLength} image patch tokens` : undefined}
+                                          >
+                                            {isImageRun
+                                              ? `<image_tokens × ${entry.runLength}>`
+                                              : entry.token.replaceAll(' ', '\u00A0').replaceAll('\n', '↵')}
+                                          </span>
+                                          {(entry.token === '⏎' || entry.token === '⏎⏎') && <div className="w-full" />}
+                                        </Fragment>
+                                      );
+                                    });
+                                  })()}
                                 </div>
                               </div>
                             </div>

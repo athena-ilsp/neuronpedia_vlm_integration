@@ -74,11 +74,11 @@ export interface ActivationAllPostRequest {
      */
     imageBase64?: string;
     /**
-     * VLM change: Optional activation threshold. Features with max activation below this value are excluded.
+     * VLM change: Top-K features per token. For each token, keep only the top K most activated features and zero the rest.
      * @type {number}
      * @memberof ActivationAllPostRequest
      */
-    activationThreshold?: number;
+    topK?: number;
 }
 
 /**
@@ -113,7 +113,7 @@ export function ActivationAllPostRequestFromJSONTyped(json: any, ignoreDiscrimin
         'featureFilter': json['feature_filter'] == null ? undefined : json['feature_filter'],
         'numResults': json['num_results'] == null ? undefined : json['num_results'],
         'imageBase64': json['image_base64'] == null ? undefined : json['image_base64'],
-        'activationThreshold': json['activation_threshold'] == null ? undefined : json['activation_threshold'],
+        'topK': json['top_k'] == null ? undefined : json['top_k'],
     };
 }
 
@@ -137,7 +137,7 @@ export function ActivationAllPostRequestToJSONTyped(value?: ActivationAllPostReq
         'feature_filter': value['featureFilter'],
         'num_results': value['numResults'],
         'image_base64': value['imageBase64'],
-        'activation_threshold': value['activationThreshold'],
+        'top_k': value['topK'],
     };
 }
 

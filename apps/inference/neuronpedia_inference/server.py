@@ -22,7 +22,7 @@ try:
     from chatspace.generation import VLLMSteeringConfig, VLLMSteerModel
 
     VLLM_AVAILABLE = True
-except ImportError:
+except Exception:
     VLLMSteeringConfig = None  # type: ignore[misc, assignment]
     VLLMSteerModel = None  # type: ignore[misc, assignment]
     VLLM_AVAILABLE = False
@@ -502,12 +502,12 @@ async def log_and_check_cuda_error(
     logger.info("=== Request Info ===")
     logger.info(f"URL: {request.url}")
 
-    # try:
-    #     body = await request.body()
-    #     if body:
-    #         logger.info(f"Body: {body.decode()}")
-    # except Exception as e:
-    #     logger.error(f"Error reading body: {str(e)}")
+    try:
+        body = await request.body()
+        if body:
+            logger.info(f"Body: {body.decode()}")
+    except Exception as e:
+        logger.error(f"Error reading body: {str(e)}")
 
     return await call_next(request)
 

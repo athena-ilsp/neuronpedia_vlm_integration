@@ -75,7 +75,7 @@ export default function SourceSetSelector({
                 })
                 .filter((ss) => {
                   if (filterToOnlyVisible) {
-                    return ss.visibility === 'PUBLIC';
+                    return ss.visibility === 'PUBLIC' || ss.visibility === 'UNLISTED';
                   }
                   return true;
                 })

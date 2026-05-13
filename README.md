@@ -50,49 +50,7 @@
 
 # VLM Integration for Visualizing (Gemma-3 + Custom SAEs)
 
-This fork extends Neuronpedia with support for Vision-Language Models — specifically `google/gemma-3-4b-it` with custom-trained SAEs — so that all existing Neuronpedia features (activation search, feature pages, steering, token heatmaps) work for VLMs through the existing UI with no new pages.
-
-## What is supported
-
-| Supported Features |
-| :--- |
-| Text-only activation search |
-| Image + text activation search |
-| Per-layer SAE feature activations (`hook_mlp_out`) |
-| Transcoder checkpoints (`hook_mlp_in` input) |
-| Feature pages (activations, explanations, steering) |
-| Image patch token display in heatmap |
-| GPU inference ✅ (set `CUDA_DEVICE`) |
-
-## Running the VLM stack
-
-```bash
-# From monorepo root — build the inference image (CPU)
-docker build --platform=linux/amd64 -t neuronpedia-inference:cpu \
-  -f apps/inference/Dockerfile --build-arg BUILD_TYPE=nocuda .
-
-# Start the full stack with VLM mounts
-docker compose \
-  -f docker/compose.yaml \
-  -f docker/compose.inference.dev.yaml \
-  -f docker/compose.inference.vlm.yaml \
-  --env-file .env.inference.gemma-3-vlm.layer10 \
-  up
-```
-
-Then open `http://localhost:3000/gemma-3-4b-it/?sourceSet=vlm-sae`.
-
-## Key environment variables
-
-| Variable | Description |
-|---|---|
-| `VLM=true` | Enable VLM mode (loads Gemma3 instead of HookedTransformer) |
-| `OVERRIDE_MODEL_ID` | HuggingFace model ID, e.g. `google/gemma-3-4b-it` |
-| `VLM_REPO_PATH` | Path to the `vlm_transcoder_circuits` repo inside the container |
-| `VLM_SAE_PATHS` | JSON dict mapping source IDs to `.pt` checkpoint paths |
-| `VLM_SAE_SET_NAME` | Source set name in the DB (default: `vlm-sae`) |
-
-See `.env.inference.gemma-3-vlm.layer10` for a full working example.
+This fork patches Neuronpedia so the existing UI (activation search, feature pages, steering, token heatmaps, circuit tracing) works with Vision-Language Models — specifically `google/gemma-3-4b-it` and custom-trained SAEs/transcoders. Images and text are supported through the same flows; no new pages were added.
 
 ## Adding a new SAE or transcoder checkpoint
 
@@ -113,10 +71,6 @@ See [VLM_INTEGRATION_REPORT.md](VLM_INTEGRATION_REPORT.md) for full technical de
 
 ## TODOs
 
-- [ ] **Make activation threshold work end-to-end**
-- [ ] **Improve UI** — hide template tokens (`<start_of_turn>`, `<end_of_turn>`) from the token heatmap display; add layer comparison view; show feature activation distribution histogram; show activated image tokens in image view; make the threshold input persist in the URL.
-- [ ] **Add transcoder checkpoints** — load and visualize transcoders (MLP input → output predictors) alongside SAEs; extend the feature page to show transcoder reconstruction quality.
-- [ ] **Add circuit tracing integration** — connect the existing [circuit-tracer](https://github.com/safety-research/circuit-tracer) graph server to VLM activations so attribution graphs can be generated for Gemma-3 with image inputs.
 - [ ] **Integrate with delphi autointerp** — pipe VLM SAE feature activations through EleutherAI's [delphi](https://github.com/EleutherAI/delphi) to automatically generate and score natural-language explanations for VLM features, including multimodal ones.
 
 ---

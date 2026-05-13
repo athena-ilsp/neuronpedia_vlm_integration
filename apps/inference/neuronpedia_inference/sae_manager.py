@@ -72,19 +72,28 @@ class SAEManager:
         # VLM_SAE_SET_NAME allows matching the source set name in the DB (default: "vlm-sae")
         vlm_sae_paths = json.loads(os.getenv("VLM_SAE_PATHS", "{}"))
         if vlm_sae_paths:
-            vlm_set_name = os.getenv("VLM_SAE_SET_NAME", "vlm-sae")
             vlm_sae_ids = list(vlm_sae_paths.keys())
+            for sae_id in vlm_sae_ids:
+                parts = sae_id.split("-", 1)
+                current_set = parts[1] if len(parts) == 2 else os.getenv("VLM_SAE_SET_NAME", "vlm-sae")
+                
+                if current_set not in self.valid_sae_sets:
+                    self.valid_sae_sets.append(current_set)
+                    self.sae_set_to_saes[current_set] = []
+                self.sae_set_to_saes[current_set].append(sae_id)
+
             all_sae_ids.extend(vlm_sae_ids)
             self.vlm_sae_paths = vlm_sae_paths
-            self.valid_sae_sets.append(vlm_set_name)
-            self.sae_set_to_saes[vlm_set_name] = vlm_sae_ids
             logger.info(f"Found {len(vlm_sae_ids)} VLM SAEs to load: {vlm_sae_ids}")
 
         starting_saes = self.get_starting_saes(all_sae_ids)
 
         # Load and immediately unload all SAEs not in starting_saes
+        # VLM change: skip load/unload for VLM SAEs — their paths are known at request time,
+        # no need to touch disk just to register them
+        vlm_ids = set(self.vlm_sae_paths.keys())
         for sae_id in all_sae_ids:
-            if sae_id not in starting_saes:
+            if sae_id not in starting_saes and sae_id not in vlm_ids:
                 self.load_sae(
                     (
                         self.config.custom_hf_model_id

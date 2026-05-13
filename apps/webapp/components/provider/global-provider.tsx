@@ -281,7 +281,7 @@ export default function GlobalProvider({
         }
         return 1;
       });
-      return ss.filter((s) => !publicOnly || s.visibility === Visibility.PUBLIC) || [];
+      return ss.filter((s) => !publicOnly || s.visibility === Visibility.PUBLIC || s.visibility === Visibility.UNLISTED) || [];
     }
     return [];
   };
@@ -375,7 +375,7 @@ export default function GlobalProvider({
 
   const getHasGraphsSourceSetsForModelId = (modelId: string) => {
     const ss = getSourceSetsForModelId(modelId);
-    return ss.filter((s) => s.hasGraphs);
+    return ss.filter((s) => s.hasGraphs || modelId.startsWith('gemma-3'));
   };
 
   const isGraphEnabledForSourceSet = (modelId: string, sourceSet: string) => {

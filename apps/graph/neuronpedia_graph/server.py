@@ -1,8 +1,10 @@
 # currently we only support one transcoder set per model.
 # we should augment to support multiple transcoder sets per model
 
+import base64
 import gc
 import gzip
+import io
 import json
 import os
 import threading
@@ -12,6 +14,7 @@ from typing import Any
 import psutil
 import requests
 import torch
+from PIL import Image
 from circuit_tracer import attribute
 from circuit_tracer.graph import prune_graph
 from circuit_tracer.replacement_model import ReplacementModel
@@ -27,14 +30,281 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 from starlette.concurrency import run_in_threadpool
-from transformers import AutoTokenizer
+from transformers import AutoProcessor, AutoTokenizer
 
 load_dotenv()
+
+# Patch circuit-tracer to keep transcoder weights on CPU during attribution.
+# This prevents the 34 lazy-loaded W_enc/W_dec tensors (210 MiB each) from accumulating
+# in PyTorch's GPU caching allocator and triggering OOM.
+def _patch_circuit_tracer():
+    # Patch ReplacementModel to honor GRAPH_DEVICE_MAP / GRAPH_MAX_MEMORY env vars
+    try:
+        import circuit_tracer.replacement_model.replacement_model_nnsight as _rm
+        _src = _rm.__file__
+        with open(_src) as _f:
+            _code = _f.read()
+        _changed = False
+        if "GRAPH_DEVICE_MAP" not in _code:
+            _code = _code.replace('import warnings', 'import os\nimport warnings', 1)
+            _code = _code.replace(
+                'device_map = {"": dev_entry}',
+                'device_map = os.environ.get("GRAPH_DEVICE_MAP") or {"": dev_entry}',
+            )
+            _changed = True
+        if "GRAPH_MAX_MEMORY" not in _code:
+            _code = _code.replace(
+                '        device_map = os.environ.get("GRAPH_DEVICE_MAP") or {"": dev_entry}\n\n        config = AutoConfig.from_pretrained(model_name)',
+                '        device_map = os.environ.get("GRAPH_DEVICE_MAP") or {"": dev_entry}\n\n        max_memory = None\n        _mem_env = os.environ.get("GRAPH_MAX_MEMORY")\n        if _mem_env:\n            max_memory = {}\n            for entry in _mem_env.split(","):\n                k, v = entry.split(":", 1)\n                k = k.strip()\n                if k.isdigit():\n                    k = int(k)\n                max_memory[k] = v.strip()\n\n        config = AutoConfig.from_pretrained(model_name)',
+            )
+            _code = _code.replace(
+                'super(cls, model).__init__(\n            model_name,\n            config=config,\n            device_map=device_map,\n            dispatch=True,\n            dtype=dtype,\n            attn_implementation="eager",\n        )',
+                '_init_kwargs = dict(\n            config=config,\n            device_map=device_map,\n            dispatch=True,\n            dtype=dtype,\n            attn_implementation="eager",\n        )\n        if max_memory is not None:\n            _init_kwargs["max_memory"] = max_memory\n        super(cls, model).__init__(model_name, **_init_kwargs)',
+            )
+            _changed = True
+        if _changed:
+            with open(_src, "w") as _f:
+                _f.write(_code)
+            import pathlib
+            for _pyc in pathlib.Path(_src).parent.glob("__pycache__/replacement_model_nnsight*.pyc"):
+                _pyc.unlink(missing_ok=True)
+    except Exception as e:
+        print(f"Warning: could not patch ReplacementModel: {e}")
+
+    # Monkey-patch SingleLayerTranscoder to keep W_enc / W_dec on CPU and run
+    # encode_sparse / decode_sparse on CPU. Only the final sparse result moves to GPU.
+    try:
+        import torch
+        import torch.nn.functional as F
+        import numpy as np
+        from safetensors import safe_open
+        import circuit_tracer.transcoder.single_layer_transcoder as _tc
+
+        _SLT = _tc.SingleLayerTranscoder
+
+        # __getattr__: lazy-load W_enc / W_dec to CPU and CACHE in RAM.
+        # Without caching, every layer call re-reads ~210 MB from disk → 14 GB of I/O per attribution
+        # run. Caching makes subsequent calls free. 34 layers × 420 MB total = 14 GB CPU RAM, fits easily.
+        _orig_getattr = _SLT.__getattr__
+        # Cache keyed by (transcoder_path, weight_name) so it survives across requests.
+        _W_CACHE: dict[tuple, torch.Tensor] = {}
+
+        def _patched_getattr(self, name):
+            if name in ("W_enc", "W_dec") and getattr(self, f"lazy_{name[2:]}coder" if name == "W_enc" else "lazy_decoder", False) and self.transcoder_path is not None:
+                cache_key = (self.transcoder_path, name)
+                cached = _W_CACHE.get(cache_key)
+                if cached is None:
+                    with safe_open(self.transcoder_path, framework="pt", device="cpu") as f:
+                        cached = f.get_tensor(name).to(dtype=self.dtype)
+                    _W_CACHE[cache_key] = cached
+                return cached
+            return _orig_getattr(self, name)
+
+        _SLT.__getattr__ = _patched_getattr
+
+        # _get_decoder_vectors: use the cached W_dec (full tensor) and index in-place — slice indexing
+        # on a tensor is much faster than safe_open partial reads, and the cache hit avoids disk I/O.
+        def _patched_get_decoder_vectors(self, feat_ids=None):
+            to_read = feat_ids if feat_ids is not None else np.s_[:]
+            if not self.lazy_decoder:
+                return self.W_dec[to_read].to(self.dtype)
+            if isinstance(to_read, torch.Tensor):
+                to_read = to_read.cpu()
+            # self.W_dec triggers the cached __getattr__; subsequent calls are O(1)
+            W_dec_full = self.W_dec
+            return W_dec_full[to_read]
+
+        _SLT._get_decoder_vectors = _patched_get_decoder_vectors
+
+        # encode_sparse: run encoder on GPU when there's free VRAM (fast path), fall back to CPU.
+        # IMPORTANT: pick GPU vs CPU ONCE at the start of an attribution run and stick with it,
+        # otherwise encoder_vectors / decoder_vectors mix devices and torch.cat fails.
+        import gc as _gc
+        _GPU_FREE_THRESHOLD = int(os.getenv("ENCODE_GPU_FREE_BYTES", str(1 * 1024**3)))  # 1 GB default
+        # Top-K per (layer, position): keep only the K most-active features at each token position.
+        # 0 (default) = no filtering. Mutable dict so request handlers can override per-request.
+        # Set GRAPH_TOP_K env var for default, or pass top_k_per_position in the request body.
+        _TOP_K_STATE = {"k": int(os.getenv("GRAPH_TOP_K", "0"))}
+        # Expose for request handler access
+        globals()["_TOP_K_STATE"] = _TOP_K_STATE
+        _layer_counter = {"n": 0}
+        _device_choice = {"use_gpu": None, "device": None}
+
+        def _decide_device(target_device):
+            # Decide once per attribution run (resets when layer 0 is seen again).
+            if _device_choice["use_gpu"] is not None and _device_choice["device"] == target_device:
+                return _device_choice["use_gpu"]
+            use_gpu = False
+            if target_device.type == "cuda" and torch.cuda.is_available():
+                free, _ = torch.cuda.mem_get_info()
+                use_gpu = free > _GPU_FREE_THRESHOLD
+            _device_choice["use_gpu"] = use_gpu
+            _device_choice["device"] = target_device
+            return use_gpu
+
+        def _patched_encode_sparse(self, input_acts, zero_positions=slice(0, 1)):
+            target_device = input_acts.device
+            # Reset device choice at start of each attribution run (layer 0).
+            if self.layer_idx == 0:
+                _device_choice["use_gpu"] = None
+                _layer_counter["n"] = 0
+            use_gpu = _decide_device(target_device)
+            if _layer_counter["n"] < 3:
+                free, _ = torch.cuda.mem_get_info() if torch.cuda.is_available() else (0, 0)
+                print(f"[mem] encode_sparse layer {_layer_counter['n']} start: GPU free {free/1e9:.2f} GB, use_gpu={use_gpu}")
+            W_enc = self.W_enc  # CPU (lazy-loaded)
+            b_enc = self.b_enc
+            if use_gpu:
+                W_enc_dev = W_enc.to(target_device, non_blocking=True)
+                b_enc_dev = b_enc.to(target_device, non_blocking=True) if b_enc.device != target_device else b_enc
+                pre_acts = F.linear(input_acts.to(W_enc_dev.dtype), W_enc_dev, b_enc_dev)
+                acts = self.activation_function(pre_acts)
+                del pre_acts
+                acts[zero_positions] = 0
+                # Apply top-K per position filter to mimic inference search.
+                _top_k = _TOP_K_STATE["k"]
+                if _top_k > 0 and acts.shape[-1] > _top_k:
+                    topk_vals, topk_idx = torch.topk(acts, _top_k, dim=-1)
+                    mask = torch.zeros_like(acts)
+                    mask.scatter_(-1, topk_idx, 1.0)
+                    acts = acts * mask
+                    del mask, topk_vals, topk_idx
+                sparse_acts = acts.to_sparse()
+                del acts
+                _, feat_idx = sparse_acts.indices()
+                # Active encoders kept on CPU to avoid accumulating GPU memory across 34 layers
+                active_encoders = W_enc_dev[feat_idx].cpu()
+                del W_enc_dev
+                torch.cuda.empty_cache()
+            else:
+                b_enc_cpu = b_enc.detach().cpu() if b_enc.device.type != "cpu" else b_enc
+                input_cpu = input_acts.detach().cpu().to(W_enc.dtype)
+                pre_acts = F.linear(input_cpu, W_enc, b_enc_cpu)
+                del input_cpu
+                acts = self.activation_function(pre_acts)
+                del pre_acts
+                acts[zero_positions] = 0
+                # Apply top-K per position filter to mimic inference search.
+                _top_k = _TOP_K_STATE["k"]
+                if _top_k > 0 and acts.shape[-1] > _top_k:
+                    topk_vals, topk_idx = torch.topk(acts, _top_k, dim=-1)
+                    mask = torch.zeros_like(acts)
+                    mask.scatter_(-1, topk_idx, 1.0)
+                    acts = acts * mask
+                    del mask, topk_vals, topk_idx
+                sparse_acts_cpu = acts.to_sparse()
+                del acts
+                _, feat_idx_cpu = sparse_acts_cpu.indices()
+                active_encoders = W_enc[feat_idx_cpu]
+                sparse_acts = sparse_acts_cpu.to(target_device)
+                del sparse_acts_cpu, b_enc_cpu
+            _layer_counter["n"] += 1
+            if _layer_counter["n"] % 5 == 0:
+                _gc.collect()
+            return sparse_acts, active_encoders
+
+        _SLT.encode_sparse = _patched_encode_sparse
+
+        # decode_sparse: GPU fast path when VRAM allows; CPU fallback otherwise.
+        def _patched_decode_sparse(self, sparse_acts, input_acts=None):
+            target_device = sparse_acts.device
+            pos_idx, feat_idx = sparse_acts.indices()
+            values = sparse_acts.values()
+            # Use the same device choice as encode_sparse for this run
+            use_gpu = _decide_device(target_device)
+            W_dec_cpu = self._get_decoder_vectors(feat_idx.cpu())  # CPU
+            if use_gpu:
+                W_dec_dev = W_dec_cpu.to(target_device, non_blocking=True)
+                scaled_decoders = W_dec_dev * values[:, None].to(W_dec_dev.dtype)
+                n_pos = sparse_acts.shape[0]
+                reconstruction = torch.zeros(
+                    n_pos, self.d_model, device=target_device, dtype=sparse_acts.dtype
+                )
+                reconstruction = reconstruction.index_add_(0, pos_idx, scaled_decoders)
+                if self.W_skip is not None:
+                    assert input_acts is not None
+                    reconstruction = reconstruction + self.compute_skip(input_acts)
+                reconstruction = reconstruction + self.b_dec.to(target_device)
+                # Keep scaled_decoders on CPU for the downstream cat (saves VRAM)
+                scaled_decoders_out = scaled_decoders.cpu()
+                del scaled_decoders, W_dec_dev, W_dec_cpu
+                torch.cuda.empty_cache()
+                return reconstruction, scaled_decoders_out
+            # CPU fallback
+            scaled_decoders_cpu = W_dec_cpu * values.detach().cpu()[:, None]
+            del W_dec_cpu
+            n_pos = sparse_acts.shape[0]
+            reconstruction_cpu = torch.zeros(
+                n_pos, self.d_model, dtype=sparse_acts.dtype
+            )
+            reconstruction_cpu = reconstruction_cpu.index_add_(
+                0, pos_idx.cpu(), scaled_decoders_cpu
+            )
+            reconstruction = reconstruction_cpu.to(target_device)
+            del reconstruction_cpu
+            if self.W_skip is not None:
+                assert input_acts is not None
+                reconstruction = reconstruction + self.compute_skip(input_acts)
+            reconstruction = reconstruction + self.b_dec.to(target_device)
+            return reconstruction, scaled_decoders_cpu  # scaled_decoders stays on CPU
+
+        _SLT.decode_sparse = _patched_decode_sparse
+
+        # Patch AttributionContext to handle CPU-stored encoder/decoder vecs.
+        # We move per-batch slices to the model's grad device, which is small per call.
+        try:
+            import circuit_tracer.attribution.context_nnsight as _ctx_mod
+            _AC = _ctx_mod.AttributionContext
+            _orig_compute_batch = _AC.compute_batch
+            _orig_compute_feat_attr = _AC.compute_feature_attributions
+
+            def _patched_compute_batch(self, layers, positions, inject_values, retain_graph=True):
+                resid_dev = self._resid_activations[0].device
+                if inject_values.device != resid_dev:
+                    inject_values = inject_values.to(resid_dev)
+                if layers.device != resid_dev:
+                    layers = layers.to(resid_dev)
+                if positions.device != resid_dev:
+                    positions = positions.to(resid_dev)
+                return _orig_compute_batch(self, layers, positions, inject_values, retain_graph=retain_graph)
+
+            _AC.compute_batch = _patched_compute_batch
+
+            def _patched_compute_feature_attributions(self, layer, grads):
+                nnz_layers, nnz_positions = self.decoder_locations
+                layer_mask = nnz_layers == layer
+                if layer_mask.any():
+                    grad_dev = grads.device
+                    # decoder_vecs is on CPU — slice with CPU mask, then move slice to grad device
+                    layer_mask_cpu = layer_mask.cpu() if layer_mask.device.type != "cpu" else layer_mask
+                    decoder_slice = self.decoder_vecs[layer_mask_cpu].to(grad_dev)
+                    nnz_positions_dev = nnz_positions.to(grad_dev) if nnz_positions.device != grad_dev else nnz_positions
+                    write_idx = self.encoder_to_decoder_map[layer_mask_cpu] if self.encoder_to_decoder_map.device.type == "cpu" else self.encoder_to_decoder_map[layer_mask]
+                    self.compute_score(
+                        grads,
+                        decoder_slice,
+                        write_index=write_idx,
+                        read_index=np.s_[:, nnz_positions_dev[layer_mask]],
+                    )
+
+            _AC.compute_feature_attributions = _patched_compute_feature_attributions
+            print("[patch] AttributionContext: compute_batch + compute_feature_attributions handle CPU vecs")
+        except Exception as e:
+            print(f"Warning: could not patch AttributionContext: {e}")
+
+        print("[patch] SingleLayerTranscoder: W_enc/W_dec/encode_sparse/decode_sparse pinned to CPU")
+    except Exception as e:
+        import traceback
+        print(f"Warning: could not patch SingleLayerTranscoder: {e}")
+        traceback.print_exc()
+
+
+_patch_circuit_tracer()
 
 
 LIMIT_TOKENS = int(os.getenv("TOKEN_LIMIT", 64))
 DEFAULT_MAX_FEATURE_NODES = int(os.getenv("MAX_FEATURE_NODES", 10000))
-OFFLOAD = None
+OFFLOAD = "cpu"  # VLM change: offload model layers to CPU during attribution to fit in 24GB GPU
 UPDATE_INTERVAL = int(os.getenv("UPDATE_INTERVAL", 1000))
 
 SECRET_KEY = os.getenv("SECRET")
@@ -105,6 +375,10 @@ TRANSCODER_SET_TO_SOURCE_URL_ARRAYS = {
         "https://huggingface.co/mwhanna/gemma-scope-2-4b-it/transcoder_all/width_262k_l0_small_affine",
         "https://huggingface.co/google/gemma-scope-2-4b-it/transcoder_all",
     ],
+    # VLM change: local transcoders trained on Gemma-3-4B-IT (loaded from circuit-tracer cache)
+    "local/gemma-3-4b-it-tc-200m-16x": [
+        "http://localhost:3000/gemma-3-4b-it/Transcoders-200m-16x",
+    ],
 }
 
 TLENS_MODEL_ID_TO_NP_MODEL_ID = {
@@ -153,6 +427,14 @@ model = ReplacementModel.from_pretrained(
     backend="nnsight" if is_nnsight_model else "transformerlens",
 )
 
+processor = None
+if is_nnsight_model:
+    processor = AutoProcessor.from_pretrained(loaded_model_arg)
+
+# Save the pristine forward so we can always restore, even if previous requests
+# failed mid-flight and left wrappers stacked on model._model.forward.
+_ORIGINAL_MODEL_FORWARD = model._model.forward if hasattr(model, "_model") else None
+
 
 def printMemory():
     if torch.cuda.is_available():
@@ -175,7 +457,7 @@ async def verify_secret_key(x_secret_key: str = Header(None)):
 class GraphGenerationRequest(BaseModel):
     prompt: str
     model_id: str
-    batch_size: int = 48
+    batch_size: int = 4  # VLM change: reduced from 48 to fit attribution in 24GB GPU with offload
     max_n_logits: int = 10
     desired_logit_prob: float = 0.95
     node_threshold: float = 0.8
@@ -185,12 +467,16 @@ class GraphGenerationRequest(BaseModel):
     signed_url: str | None = None
     user_id: str | None = None
     compress: bool = False
+    image_base64: str | None = None
+    # Per-position top-K filter for encode_sparse (0 = use env default, no filtering)
+    top_k_per_position: int = 0
 
 
 class ForwardPassRequest(BaseModel):
     prompt: str
     max_n_logits: int = 10
     desired_logit_prob: float = 0.95
+    image_base64: str | None = None
 
 
 class SteerFeature(BaseModel):
@@ -488,23 +774,78 @@ async def forward_pass_handler(req: Request):
         print(f"Received forward pass request: prompt='{req_data.prompt}'")
 
         # Tokenize prompt
-        # Only add special tokens if prompt doesn't already start with BOS
-        tokens = model.tokenizer.encode(req_data.prompt, add_special_tokens=False)
-        if tokens and tokens[0] != model.tokenizer.bos_token_id:
-            tokens = model.tokenizer.encode(req_data.prompt, add_special_tokens=True)
+        # VLM change: if image is provided, we must extract pixel_values and patch the model briefly
+        old_forward = None
+        pixel_values = None
+        if req_data.image_base64 and processor is not None:
+            image_bytes = base64.b64decode(req_data.image_base64)
+            pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+
+            # Completion mode: leave the user turn open so the model continues the sentence
+            # naturally (e.g. "This animal is a " -> "cat") instead of closing the user turn and
+            # starting a "Certainly..." style assistant reply.
+            bos = model.tokenizer.bos_token or ""
+            raw = req_data.prompt[len(bos):] if req_data.prompt.startswith(bos) else req_data.prompt
+            user_tag = "<start_of_turn>user\n"
+            if raw.startswith(user_tag):
+                head = user_tag
+                tail = raw[len(user_tag):]
+            else:
+                head = ""
+                tail = raw
+            if tail.endswith("<end_of_turn>"):
+                tail = tail[: -len("<end_of_turn>")]
+            tail_no_newline = tail.rstrip("\n")
+            chat_text = f"{head}<start_of_image>\n{tail_no_newline}"
+            proc_out = processor(text=[chat_text], images=[pil_image], return_tensors="pt", add_special_tokens=False)
+            tokens = proc_out["input_ids"][0].tolist()
+            pixel_values = proc_out["pixel_values"].to(get_device())
+            original_input_ids = proc_out["input_ids"].to(get_device())
+            if "token_type_ids" in proc_out:
+                original_token_type_ids = proc_out["token_type_ids"].to(get_device())
+            else:
+                image_token_id = processor.image_token_id
+                original_token_type_ids = (original_input_ids == image_token_id).long()
+
+            # VLM: wrap PRISTINE forward. Force our image-expanded input_ids.
+            old_forward = _ORIGINAL_MODEL_FORWARD
+            def new_forward(*args, **kwargs):
+                if len(args) > 0:
+                    args = args[1:]
+                kwargs.pop('inputs_embeds', None)
+                kwargs['input_ids'] = original_input_ids
+                kwargs['pixel_values'] = pixel_values
+                kwargs['token_type_ids'] = original_token_type_ids
+                am = kwargs.get('attention_mask')
+                if am is not None and am.shape[-1] != original_input_ids.shape[-1]:
+                    kwargs.pop('attention_mask', None)
+                return old_forward(*args, **kwargs)
+            model._model.forward = new_forward
+        else:
+            # Only add special tokens if prompt doesn't already start with BOS
+            tokens = model.tokenizer.encode(req_data.prompt, add_special_tokens=False)
+            if tokens and tokens[0] != model.tokenizer.bos_token_id:
+                tokens = model.tokenizer.encode(req_data.prompt, add_special_tokens=True)
+            
         print(f"Tokens: {tokens}")
 
         # Convert to tensor and run forward pass
         input_ids = torch.tensor([tokens]).to(get_device())
 
         with torch.no_grad():
-            # Get model output
-            output = model(input_ids)
-            # Check if output has logits property (nnsight case)
+            # Bypass nnsight for plain forward-pass: call the underlying HF model directly
+            # so we don't accumulate tracing-graph activations on CPU across requests.
+            if hasattr(model, "_model"):
+                hf_model = model._model
+                output = hf_model(input_ids=input_ids)
+            else:
+                output = model(input_ids)
             if hasattr(output, "logits"):
                 output = output.logits
 
             logits = output[0, -1, :]  # Get logits for last token
+            # Free intermediate tensors immediately
+            del output
 
             # Get unembedding matrix
             # Compute salient logits
@@ -524,6 +865,24 @@ async def forward_pass_handler(req: Request):
                 max_n_logits=req_data.max_n_logits,
                 desired_logit_prob=req_data.desired_logit_prob,
             )
+            
+            if old_forward is not None:
+                model._model.forward = _ORIGINAL_MODEL_FORWARD
+                old_forward = None
+                new_forward = None
+                pixel_values = None
+                if 'original_input_ids' in dir():
+                    del original_input_ids
+                if 'original_token_type_ids' in dir():
+                    del original_token_type_ids
+
+        # Always clean up tensors after forward-pass to keep RAM bounded
+        del input_ids, logits
+        if 'logit_indices' in dir():
+            pass  # keep for use below
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         # Decode tokens and create result
         results = []
@@ -604,13 +963,20 @@ async def generate_graph(req: Request):
                 detail=f"Model '{tlens_model_id}' is not available. Only '{loaded_model_arg}' is currently loaded.",
             )
 
-        batch_size = req_data.batch_size
+        # Cap batch_size for VLM (image inputs make activation tensors balloon).
+        # batch=8 × 272 tokens × 40960 features × 2 bytes = ~1.7 GB per layer per phase.
+        batch_size = min(req_data.batch_size, int(os.getenv("MAX_BATCH_SIZE", "2")))
         max_n_logits = req_data.max_n_logits
         desired_logit_prob = req_data.desired_logit_prob
         node_threshold = req_data.node_threshold
         edge_threshold = req_data.edge_threshold
         slug_identifier = req_data.slug_identifier or f"generated-{int(time.time())}"
         max_feature_nodes = req_data.max_feature_nodes
+        # Apply request-level top-K override (0 falls back to env default).
+        if req_data.top_k_per_position > 0:
+            _TOP_K_STATE["k"] = req_data.top_k_per_position
+        else:
+            _TOP_K_STATE["k"] = int(os.getenv("GRAPH_TOP_K", "0"))
         print(
             f"Thread {threading.get_ident()}: Processing request for prompt: '{prompt[:50]}...' with parameters:"
         )
@@ -623,6 +989,7 @@ async def generate_graph(req: Request):
         print(f"  transcoder_set: {transcoder_set}")
         print(f"  slug_identifier: {slug_identifier}")
         print(f"  max_feature_nodes: {max_feature_nodes}")
+        print(f"  top_k_per_position: {_TOP_K_STATE['k']}")
 
         def _blocking_graph_generation_task():
             print(
@@ -631,7 +998,85 @@ async def generate_graph(req: Request):
             _total_start_time = time.time()
 
             try:
-                tokens = model.tokenizer.encode(prompt, add_special_tokens=False)
+                old_forward = None
+                pixel_values = None
+                if req_data.image_base64 and processor is not None:
+                    image_bytes = base64.b64decode(req_data.image_base64)
+                    pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+
+                    # Build a prompt that lets the model CONTINUE the user's text after the image,
+                    # rather than treating it as a finished user turn that triggers an assistant
+                    # reply (which would give generic "Certainly..." starts). We splice the image
+                    # right after "<start_of_turn>user\n" and leave the user's text dangling —
+                    # no <end_of_turn>, no <start_of_turn>model. The model then predicts the
+                    # natural next token of the user's sentence (e.g. "This animal is a " -> "cat").
+                    bos = model.tokenizer.bos_token or ""
+                    raw = prompt[len(bos):] if prompt.startswith(bos) else prompt
+                    user_tag = "<start_of_turn>user\n"
+                    if raw.startswith(user_tag):
+                        head = user_tag
+                        tail = raw[len(user_tag):]
+                    else:
+                        head = ""
+                        tail = raw
+                    # Drop any pre-existing turn closers so we stay in completion mode.
+                    if tail.endswith("<end_of_turn>"):
+                        tail = tail[: -len("<end_of_turn>")]
+                    # Preserve trailing space in `tail` — Gemma tokens often include the leading
+                    # space (e.g. " cat"), so removing it changes predictions. Use .rstrip("\n") only.
+                    tail_no_newline = tail.rstrip("\n")
+                    # `<start_of_image>` is what the processor expands into 256 image patch tokens.
+                    chat_text = f"{head}<start_of_image>\n{tail_no_newline}"
+                    proc_out = processor(text=[chat_text], images=[pil_image], return_tensors="pt", add_special_tokens=False)
+                    tokens = proc_out["input_ids"][0].tolist()
+                    pixel_values = proc_out["pixel_values"].to(get_device())
+                    original_input_ids = proc_out["input_ids"].to(get_device())
+                    # token_type_ids: 1 for image tokens, 0 elsewhere — required by Gemma3 to
+                    # match get_placeholder_mask. Use processor output if present, else compute.
+                    if "token_type_ids" in proc_out:
+                        original_token_type_ids = proc_out["token_type_ids"].to(get_device())
+                    else:
+                        image_token_id = processor.image_token_id  # 262144 for Gemma3
+                        original_token_type_ids = (original_input_ids == image_token_id).long()
+
+                    # VLM: wrap PRISTINE forward. Force input_ids to our image-expanded version
+                    # (272 tokens w/ 256 image placeholders). nnsight passes the text-only 7-token
+                    # version via ensure_tokenized, which misses the image tokens entirely.
+                    old_forward = _ORIGINAL_MODEL_FORWARD
+                    _dbg = {"n": 0}
+                    def new_forward(*args, **kwargs):
+                        # Always drop whatever input_ids/inputs_embeds the caller provided and use ours.
+                        if len(args) > 0:
+                            args = args[1:]
+                        kwargs.pop('inputs_embeds', None)
+                        kwargs['input_ids'] = original_input_ids
+                        bs = original_input_ids.shape[0]
+                        kwargs['pixel_values'] = pixel_values
+                        kwargs['token_type_ids'] = original_token_type_ids
+                        # attention_mask: if caller's has wrong length, drop it; inner will rebuild
+                        am = kwargs.get('attention_mask')
+                        if am is not None and am.shape[-1] != original_input_ids.shape[-1]:
+                            kwargs.pop('attention_mask', None)
+                        if _dbg["n"] < 3:
+                            iid = kwargs['input_ids']
+                            n_img = (iid == 262144).sum().item()
+                            print(f"[fwd] call {_dbg['n']}: input_ids.shape={tuple(iid.shape)}, n_image_tokens={n_img}, "
+                                  f"pixel_values.shape={tuple(pixel_values.shape)}")
+                        _dbg["n"] += 1
+                        return old_forward(*args, **kwargs)
+                    model._model.forward = new_forward
+                    # Also override ensure_tokenized so attribute()'s internal call gets the
+                    # image-expanded 272-token tensor instead of re-tokenizing the bare text.
+                    # Without this, token_vectors shape is wrong and Phase 3 einsum fails.
+                    _orig_ensure_tokenized = model.ensure_tokenized
+                    _image_tokens_1d = original_input_ids.squeeze(0)
+                    def _patched_ensure_tokenized(_inputs):
+                        return _image_tokens_1d
+                    model.ensure_tokenized = _patched_ensure_tokenized
+                else:
+                    tokens = model.tokenizer.encode(prompt, add_special_tokens=False)
+                    _orig_ensure_tokenized = None
+
                 print(
                     f"Thread {threading.get_ident()} (worker): {len(tokens)} Tokens: {tokens}"
                 )
@@ -655,7 +1100,7 @@ async def generate_graph(req: Request):
                 max_n_logits=max_n_logits,
                 desired_logit_prob=desired_logit_prob,
                 batch_size=batch_size,
-                max_feature_nodes=req_data.max_feature_nodes,
+                max_feature_nodes=min(req_data.max_feature_nodes, DEFAULT_MAX_FEATURE_NODES),
                 offload=OFFLOAD,
                 update_interval=UPDATE_INTERVAL,
             )
@@ -663,6 +1108,24 @@ async def generate_graph(req: Request):
             print(
                 f"Thread {threading.get_ident()} (worker): Attribution Time: {attribution_time_ms:.2f}ms"
             )
+            
+            if old_forward is not None:
+                model._model.forward = _ORIGINAL_MODEL_FORWARD
+                old_forward = None
+                new_forward = None
+                pixel_values = None
+                if 'original_input_ids' in dir():
+                    del original_input_ids
+                if 'original_token_type_ids' in dir():
+                    del original_token_type_ids
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+            # Restore ensure_tokenized if we overrode it
+            if _orig_ensure_tokenized is not None:
+                model.ensure_tokenized = _orig_ensure_tokenized
+                _orig_ensure_tokenized = None
 
             _graph.to("cuda")
 
@@ -729,6 +1192,22 @@ async def generate_graph(req: Request):
                 "node_threshold": node_threshold,
                 "edge_threshold": edge_threshold,
             }
+
+            # VLM change: when the prompt included an image, embed the base64 in metadata
+            # so the frontend can render patch thumbnails + the full image alongside the graph.
+            if req_data.image_base64:
+                image_token_id = 262144  # Gemma3 image placeholder token
+                # Find the range of image-token positions in the expanded prompt
+                tokens_list = list(tokens) if isinstance(tokens, list) else tokens
+                image_positions = [i for i, t in enumerate(tokens_list) if t == image_token_id]
+                model_dict["metadata"]["image_input"] = {
+                    "image_base64": req_data.image_base64,
+                    "image_token_id": image_token_id,
+                    "image_positions": image_positions,
+                    # Grid layout for Gemma3: 256 patches arranged 16x16
+                    "grid_rows": 16,
+                    "grid_cols": 16,
+                }
 
             # Convert back to JSON string
             model_json = json.dumps(model_dict)

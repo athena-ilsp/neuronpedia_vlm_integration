@@ -27,7 +27,7 @@ import { useRouter } from 'next-nprogress-bar';
 import { useEffect, useRef, useState } from 'react';
 import ReactTextareaAutosize from 'react-textarea-autosize';
 import ExamplesButtons from './examples-buttons';
-import ResultItem from './result-item';
+import ResultItem, { ImagePatchGrid } from './result-item';
 
 const MAX_SEARCH_QUERY_LENGTH_CHARS = 800;
 
@@ -78,8 +78,9 @@ export default function InferenceSearcher({
   // VLM change: image state for VLM models
   const [imageBase64, setImageBase64] = useState<string | undefined>(undefined);
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | undefined>(undefined);
-  // VLM change: activation threshold for under-sparse SAEs (default 0.5)
-  const [activationThreshold, setActivationThreshold] = useState<number | undefined>(0.5);
+  // VLM change: top-k features per token (keep only top K activated features, zero the rest)
+  const [topK, setTopK] = useState<number>(50);
+  const [topKInput, setTopKInput] = useState<string>('50');
   const imageInputRef = useRef<HTMLInputElement>(null);
   // VLM change: Gemma image sequence constants — 1 boi + 256 patches + 1 eoi = 258 image tokens
   const VLM_IMAGE_SEQ_LENGTH = 256;
@@ -145,7 +146,7 @@ export default function InferenceSearcher({
     setModelId(newModelId);
     const newSourceSet = getFirstSourceSetForModel(
       globalModels[newModelId],
-      Visibility.PUBLIC,
+      Visibility.UNLISTED,
       true,
       false,
     ) as SourceSetWithPartialRelations;
@@ -193,13 +194,13 @@ export default function InferenceSearcher({
     setTokens([]);
     // VLM change: if image-only (no text), send empty string — inference server will prepend BOS + image
     const queryText = values.searchQuery.trim().length === 0 ? '' : values.searchQuery;
-    submitSearchAll(modelId, queryText, selectedLayers, sourceSet, ignoreBos, sortIndexes, imageBase64, isVlmModel ? activationThreshold : undefined); // VLM change: pass image + threshold
+    submitSearchAll(modelId, queryText, selectedLayers, sourceSet, ignoreBos, sortIndexes, imageBase64, isVlmModel ? topK : undefined); // VLM change: pass image + threshold
   }
 
   // load query if we have one (skip empty q — image-only searches don't use URL)
   useEffect(() => {
     if (q !== undefined && q !== '') {
-      submitSearchAll(modelId, q, selectedLayers, sourceSet, ignoreBos, sortIndexes, imageBase64, isVlmModel ? activationThreshold : undefined); // VLM change
+      submitSearchAll(modelId, q, selectedLayers, sourceSet, ignoreBos, sortIndexes, imageBase64, isVlmModel ? topK : undefined); // VLM change
       formRef.current?.setFieldValue('searchQuery', q);
     }
   }, [q]);
@@ -407,28 +408,31 @@ export default function InferenceSearcher({
                           </div>
                         )}
                       </div>
-                      {/* VLM change: activation threshold input */}
+                      {/* VLM change: top-k features per token */}
                       <div className="flex flex-row items-center gap-x-1.5">
-                        <label className="text-[11px] font-medium text-slate-500" htmlFor="activation-threshold">
-                          Act. Threshold:
+                        <label className="text-[11px] font-medium text-slate-500" htmlFor="top-k">
+                          Top-K:
                         </label>
                         <input
-                          id="activation-threshold"
+                          id="top-k"
                           type="number"
-                          min="0"
-                          max="100"
-                          step="0.1"
-                          value={activationThreshold ?? ''}
+                          min="1"
+                          max="10000"
+                          step="1"
+                          value={topKInput}
                           onChange={(e) => {
-                            const val = e.target.value === '' ? undefined : parseFloat(e.target.value);
-                            setActivationThreshold(val);
-                            setNeedsReloadSearch(true);
+                            setTopKInput(e.target.value);
+                            const val = parseInt(e.target.value, 10);
+                            if (!isNaN(val) && val >= 1) {
+                              setTopK(val);
+                              setNeedsReloadSearch(true);
+                            }
                           }}
                           className="w-16 rounded border border-slate-300 bg-white px-1.5 py-1 text-center font-mono text-[11px] text-slate-700 focus:border-sky-500 focus:outline-none"
-                          placeholder="0.5"
+                          placeholder="50"
                         />
                         <span className="text-[10px] text-slate-400">
-                          (hide features with max activation below this)
+                          (keep only top K features per token)
                         </span>
                       </div>
                     </div>
@@ -604,55 +608,31 @@ export default function InferenceSearcher({
             </div>
           </div>
 
-          {/* VLM change: image patch grid — shown when an image was used in search */}
+          {/* VLM change: unified image patch selector — click patches to sort by them */}
           {searchImageBase64 && isVlmModel && (() => {
             const firstPatchIdx = tokens.findIndex((t) => t === '<image_soft_token>');
             if (firstPatchIdx === -1) return null;
-            // 16x16 grid of patches (256 = 16*16)
-            const GRID = 16;
+            const patchCount = tokens.filter((t) => t === '<image_soft_token>').length;
+            const emptyPatchValues = Array(patchCount).fill(0);
             return (
               <div className="mb-4 mt-2 w-full max-w-screen-lg">
                 <div className="mb-1 text-[11px] font-medium uppercase text-slate-500">
                   Image decomposed into {VLM_IMAGE_SEQ_LENGTH} patch tokens (click a patch to sort by it)
                 </div>
-                <div className="flex flex-row gap-x-3">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={`data:image/jpeg;base64,${searchImageBase64}`}
-                    alt="search input"
-                    className="h-32 w-32 rounded object-cover"
-                  />
-                  <div
-                    className="grid gap-[1px]"
-                    style={{ gridTemplateColumns: `repeat(${GRID}, minmax(0, 1fr))`, width: `${GRID * 18}px` }}
-                  >
-                    {Array.from({ length: VLM_IMAGE_SEQ_LENGTH }, (_, i) => {
-                      const tokenIdx = firstPatchIdx + i;
-                      const isSelected = sortIndexes.indexOf(tokenIdx) !== -1;
-                      return (
-                        <button
-                          key={i}
-                          type="button"
-                          title={`Image_patch_${i + 1} (token ${tokenIdx})`}
-                          onClick={() => {
-                            if (isSelected) {
-                              setSortIndexes(sortIndexes.filter((s) => s !== tokenIdx).toSorted());
-                            } else {
-                              setSortIndexes([...sortIndexes, tokenIdx].toSorted());
-                            }
-                          }}
-                          className={`h-[16px] w-[16px] rounded-[1px] border text-[5px] font-bold leading-none transition-colors ${
-                            isSelected
-                              ? 'border-emerald-600 bg-emerald-500 text-white'
-                              : 'border-sky-200 bg-sky-50 text-sky-400 hover:border-emerald-400 hover:bg-emerald-100'
-                          }`}
-                        >
-                          {i + 1}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
+                <ImagePatchGrid
+                  patchValues={emptyPatchValues}
+                  maxValue={0}
+                  imageBase64={searchImageBase64}
+                  selectedPatchIndexes={sortIndexes}
+                  firstPatchTokenIndex={firstPatchIdx}
+                  onPatchClick={(tokenIdx) => {
+                    if (sortIndexes.includes(tokenIdx)) {
+                      setSortIndexes(sortIndexes.filter((s) => s !== tokenIdx).toSorted());
+                    } else {
+                      setSortIndexes([...sortIndexes, tokenIdx].toSorted());
+                    }
+                  }}
+                />
               </div>
             );
           })()}
@@ -697,6 +677,14 @@ export default function InferenceSearcher({
                     topExplanation={topExplanation}
                     searchSortIndexes={searchSortIndexes}
                     showDashboards={showDashboards}
+                    searchImageBase64={searchImageBase64 || undefined}
+                    onPatchClick={(tokenIdx) => {
+                      if (sortIndexes.includes(tokenIdx)) {
+                        setSortIndexes(sortIndexes.filter((s) => s !== tokenIdx).toSorted());
+                      } else {
+                        setSortIndexes([...sortIndexes, tokenIdx].toSorted());
+                      }
+                    }}
                   />
                 );
               })}

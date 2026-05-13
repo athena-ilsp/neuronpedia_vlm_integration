@@ -815,6 +815,24 @@ export default function LinkGraph() {
     const nonUndefinedNodes = nodes.filter((d) => d.ctx_idx !== undefined);
     const earliestCtxWithNodes = d3.min(nonUndefinedNodes, (d) => d.ctx_idx as number) || 0;
 
+    // VLM: when prompt has an image, hide image-placeholder columns that contribute no real
+    // signal. Image inputs explode the X axis with 256 identical patch columns; circuit-tracer
+    // always emits an "embedding" node per position, so naive "0 nodes" filtering doesn't help.
+    // A column counts as "informative" if it has at least one feature/transcoder/error node
+    // (anything other than just an embedding node).
+    const imageInput = data.metadata.image_input;
+    const imagePositionsSet = new Set<number>(imageInput?.image_positions ?? []);
+    const isInformativeImageNode = (n: { feature_type?: string }) =>
+      n.feature_type !== undefined && n.feature_type !== 'embedding';
+    // Lookup: ctxIdx -> {row, col} grid position within the image patch grid.
+    const imagePatchOf = new Map<number, { row: number; col: number; index: number }>();
+    if (imageInput) {
+      const cols = imageInput.grid_cols;
+      imageInput.image_positions.forEach((ctxIdx, k) => {
+        imagePatchOf.set(ctxIdx, { row: Math.floor(k / cols), col: k % cols, index: k });
+      });
+    }
+
     let cumsum = 0;
     const ctxCounts: ContextCount[] = [];
 
@@ -825,7 +843,12 @@ export default function LinkGraph() {
       let maxCount = 1;
       if (ctxIdx >= earliestCtxWithNodes) {
         const group = nodes.filter((d) => d.ctx_idx === ctxIdx);
-        if (group.length > 0) {
+        const isImageCol = imagePositionsSet.has(ctxIdx);
+        const hasInformative = group.some(isInformativeImageNode);
+        if (isImageCol && !hasInformative) {
+          // Collapse: zero width, no advance to cumsum.
+          maxCount = 0;
+        } else if (group.length > 0) {
           const groupedByStream = d3.nestBy(group, (d) => d.streamIdx?.toString() || '0');
           const lengths = groupedByStream.map((g) => g.length);
           maxCount = Math.max(1, Math.max(...lengths));
@@ -1137,12 +1160,17 @@ export default function LinkGraph() {
       });
 
     // Add x axis text/lines for prompt tokens
-    const promptTicks = data.metadata.prompt_tokens.slice(earliestCtxWithNodes).map((token, i) => {
-      const ctxIdx = i + earliestCtxWithNodes;
-      const mNodes = nodes.filter((d) => d.ctx_idx === ctxIdx);
-      const hasEmbed = mNodes.some((d) => d.feature_type === 'embedding');
-      return { token, ctx_idx: ctxIdx, mNodes, hasEmbed };
-    });
+    // VLM: drop image-placeholder columns that only contain trivial embedding markers
+    // (no transcoder feature nodes, no MLP errors). Matches the x-scale collapse above.
+    const promptTicks = data.metadata.prompt_tokens
+      .slice(earliestCtxWithNodes)
+      .map((token, i) => {
+        const ctxIdx = i + earliestCtxWithNodes;
+        const mNodes = nodes.filter((d) => d.ctx_idx === ctxIdx);
+        const hasEmbed = mNodes.some((d) => d.feature_type === 'embedding');
+        return { token, ctx_idx: ctxIdx, mNodes, hasEmbed };
+      })
+      .filter((tick) => !(imagePositionsSet.has(tick.ctx_idx) && !tick.mNodes.some(isInformativeImageNode)));
 
     const xTickSel = c.svgBot
       .selectAll('g.prompt-token')
@@ -1160,8 +1188,22 @@ export default function LinkGraph() {
       .attr('stroke', '#B0AEA6')
       .attr('d', `M-${padR + 3.5},${-c.y.bandwidth() / 2 + 6}V${8}`);
 
+    // VLM: insert an <svg:defs> block with a per-graph clip-path that crops the full
+    // base64 image to one patch tile. Patch size on screen is fixed (16 px square).
+    const PATCH_TILE_PX = 16;
+    if (imageInput) {
+      const defs = c.svgBot.append('defs').attr('class', 'vlm-patch-defs');
+      defs
+        .append('clipPath')
+        .attr('id', 'vlm-patch-clip')
+        .append('rect')
+        .attr('width', PATCH_TILE_PX)
+        .attr('height', PATCH_TILE_PX);
+    }
+
+    // For text-token columns, render the text label (existing behaviour).
     xTickSel
-      .filter((d) => d.hasEmbed)
+      .filter((d) => d.hasEmbed && !imagePatchOf.has(d.ctx_idx))
       .append('g')
       .attr('transform', `translate(${X_LABEL_OFFSET})`)
       .append('text')
@@ -1173,6 +1215,55 @@ export default function LinkGraph() {
       .attr('dominant-baseline', 'middle')
       .attr('font-size', 10)
       .attr('fill', '#334155');
+
+    // VLM: for image-patch columns, render the corresponding cropped patch tile from the
+    // full base64 image. We embed the full image at GRID_ROWS*PATCH_TILE_PX size and use a
+    // clip-path + transform to expose only the patch we want.
+    if (imageInput) {
+      const fullImgDataUrl = imageInput.image_base64.startsWith('data:')
+        ? imageInput.image_base64
+        : `data:image/png;base64,${imageInput.image_base64}`;
+      const gridRows = imageInput.grid_rows;
+      const gridCols = imageInput.grid_cols;
+      const fullW = gridCols * PATCH_TILE_PX;
+      const fullH = gridRows * PATCH_TILE_PX;
+
+      xTickSel
+        .filter((d) => imagePatchOf.has(d.ctx_idx))
+        .append('g')
+        .attr('class', 'vlm-patch-tile')
+        .attr('transform', `translate(-${PATCH_TILE_PX / 2}, 4)`)
+        .each(function (d) {
+          const patch = imagePatchOf.get(d.ctx_idx)!;
+          const sel = d3.select(this);
+          // Clip viewport: only the patch tile is visible.
+          sel
+            .append('clipPath')
+            .attr('id', `vlm-patch-clip-${d.ctx_idx}`)
+            .append('rect')
+            .attr('width', PATCH_TILE_PX)
+            .attr('height', PATCH_TILE_PX);
+          sel
+            .append('image')
+            .attr('href', fullImgDataUrl)
+            .attr('width', fullW)
+            .attr('height', fullH)
+            .attr('x', -patch.col * PATCH_TILE_PX)
+            .attr('y', -patch.row * PATCH_TILE_PX)
+            .attr('clip-path', `url(#vlm-patch-clip-${d.ctx_idx})`)
+            .attr('preserveAspectRatio', 'none');
+          // Subtle border around the tile to separate adjacent patches.
+          sel
+            .append('rect')
+            .attr('width', PATCH_TILE_PX)
+            .attr('height', PATCH_TILE_PX)
+            .attr('fill', 'none')
+            .attr('stroke', '#94a3b8')
+            .attr('stroke-width', 0.5);
+          // Tooltip with patch (row, col) for debugging / clarity on hover.
+          sel.append('title').text(`patch (${patch.row}, ${patch.col})`);
+        });
+    }
 
     // Add logit ticks
     const logitTickSel = c.svgBot

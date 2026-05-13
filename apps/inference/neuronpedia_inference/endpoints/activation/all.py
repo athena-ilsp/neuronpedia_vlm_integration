@@ -83,7 +83,7 @@ async def activation_all(
         )
 
     try:
-        logger.info("Processing activations")
+        logger.info("Processing activations — top_k=%s num_results=%s", request.top_k, request.num_results)
         processor = ActivationProcessor()
         result = processor.process_activations(request)
         logger.info("Activations result processed successfully")
@@ -256,6 +256,15 @@ class ActivationProcessor:
     ) -> list[dict[str, Any]]:
         """Process activations for each selected layer."""
         sae_manager = SAEManager.get_instance()
+        # When all layers are selected, apply top-k globally across all layers after
+        # collecting them, so each token has at most top-k nonzero features total.
+        # When a single layer is selected, top-k is applied per-layer as before.
+        all_layers_selected = len(request.selected_sources) > 1
+        per_layer_top_k = request.top_k if not all_layers_selected else None
+
+        # Collect raw activations tensors (after ignore_bos zeroing) for global top-k
+        raw_activations_list = []  # list of [num_features, seq_len] per layer
+
         source_activations = []
         for selected_source in request.selected_sources:
             layer_num = self._get_layer_num(selected_source)
@@ -274,15 +283,55 @@ class ActivationProcessor:
                 ]
                 activations_by_index = new_activations_by_index
 
-            source_activations.append(
-                self._process_source_activations(
-                    activations_by_index,
-                    layer_num,
-                    request.sort_by_token_indexes,
-                    request.ignore_bos,
-                    str_tokens,
-                    activation_threshold=request.activation_threshold,
-                )
+            result = self._process_source_activations(
+                activations_by_index,
+                layer_num,
+                request.sort_by_token_indexes,
+                request.ignore_bos,
+                str_tokens,
+                top_k=per_layer_top_k,
+            )
+            source_activations.append(result)
+
+            if all_layers_selected and request.top_k is not None and request.top_k > 0:
+                raw_activations_list.append(result["activations"])
+
+        # Global top-k: when all layers selected, apply top-k across the combined
+        # [total_features, seq_len] tensor so each token has at most top-k nonzero
+        # features globally (across all layers combined).
+        if all_layers_selected and request.top_k is not None and request.top_k > 0:
+            combined = torch.cat(raw_activations_list, dim=0)  # [total_features, seq_len]
+            top_k = request.top_k
+
+            # Build global mask on CPU to avoid OOM with large feature counts (34 layers × 40k features)
+            combined_cpu = combined.cpu()
+            del combined
+            torch.cuda.empty_cache()
+            combined_t = combined_cpu.t()  # [seq_len, total_features]
+            effective_k = min(top_k, combined_t.shape[1])
+            _, topk_indices = torch.topk(combined_t, effective_k, dim=1)
+            mask = torch.zeros_like(combined_t)
+            mask.scatter_(1, topk_indices, 1.0)
+            masked_combined = (combined_t * mask).t()  # [total_features, seq_len]
+
+            # Split mask back per layer and update activations in each result
+            nz_mask = masked_combined > 0
+            offset = 0
+            for i, result in enumerate(source_activations):
+                n_features = raw_activations_list[i].shape[0]
+                layer_masked = masked_combined[offset:offset + n_features]
+                result["activations"] = layer_masked
+                result["max_values"], result["max_indices"] = torch.max(layer_masked, dim=1)
+                if request.sort_by_token_indexes:
+                    result["sum_values"] = layer_masked[:, request.sort_by_token_indexes].sum(dim=1)
+                offset += n_features
+
+            total_nz = nz_mask.sum().item()
+            per_token_nz = nz_mask.sum(dim=0).tolist()
+            del masked_combined, combined_t, mask, nz_mask
+            logger.info(
+                "VLM DEBUG global top_k=%d applied across %d layers: total_nonzero=%d, per_token_nonzero=%s",
+                top_k, len(source_activations), total_nz, per_token_nz,
             )
 
         return source_activations
@@ -343,7 +392,7 @@ class ActivationProcessor:
         sort_by_token_indexes: list[int],
         ignore_bos: bool,
         str_tokens: list[str] = None,
-        activation_threshold: float | None = None,
+        top_k: int | None = None,
     ) -> dict[str, Any]:
         model = Model.get_instance()
         if ignore_bos:
@@ -353,27 +402,40 @@ class ActivationProcessor:
             ):
                 activations_by_index[:, 0] = 0
             
-            # VLM change: ignore chat template tokens if they are present at the start
+            # VLM change: ignore chat template tokens and special structural tokens.
+            # Gemma3 chat template always starts: <bos> <start_of_turn> user \n <content> <end_of_turn> \n
+            # Zero the fixed 4-token prefix unconditionally, then zero all special tokens
+            # and any \n that immediately follows an <end_of_turn> anywhere in the sequence.
             if str_tokens is not None:
-                template_prefix = ['<bos>', '<start_of_turn>', 'user', '\n']
-                if len(str_tokens) >= len(template_prefix) and str_tokens[:len(template_prefix)] == template_prefix:
-                    for i in range(len(template_prefix)):
-                        activations_by_index[:, i] = 0
-                
-                # Also ignore all special structural tokens anywhere in the sequence
+                # Zero fixed chat prefix: positions 0-3 = <bos> <start_of_turn> user \n
+                for i in range(min(4, len(str_tokens))):
+                    activations_by_index[:, i] = 0
+                # Zero special tokens and trailing \n after <end_of_turn> anywhere
                 special_tokens = {'<bos>', '<eos>', '<start_of_turn>', '<end_of_turn>'}
                 for i, t in enumerate(str_tokens):
                     if t in special_tokens:
                         activations_by_index[:, i] = 0
+                        # also zero the \n that immediately follows
+                        if i + 1 < len(str_tokens) and str_tokens[i + 1] == '\n':
+                            activations_by_index[:, i + 1] = 0
 
-        # VLM change: apply activation threshold — zero out activations below the threshold.
-        # This is useful for under-sparse SAEs (trained with weak l1, not top-k) where many
-        # features have small but nonzero activations at every token.
-        logger.info("VLM DEBUG activation_threshold received: %s (type=%s)", activation_threshold, type(activation_threshold))
-        if activation_threshold is not None and activation_threshold > 0:
+        # VLM change: apply top-k per token — for each token position, keep only the
+        # top K most activated features and zero out the rest.
+        if top_k is not None and top_k > 0:
+            # activations_by_index shape: [num_features, seq_len]
             activations_by_index = activations_by_index.clone()
-            activations_by_index[activations_by_index < activation_threshold] = 0
-            logger.info("VLM DEBUG threshold applied: nonzero after=%d", (activations_by_index > 0).sum().item())
+            num_features = activations_by_index.shape[0]
+            if top_k < num_features:
+                # Work per-token (column): for each token, find top-k features
+                # Transpose to [seq_len, num_features], apply topk, transpose back
+                act_t = activations_by_index.t()  # [seq_len, num_features]
+                topk_vals, topk_indices = torch.topk(act_t, top_k, dim=1)
+                mask = torch.zeros_like(act_t)
+                mask.scatter_(1, topk_indices, 1.0)
+                activations_by_index = (act_t * mask).t()  # back to [num_features, seq_len]
+            total_nz = (activations_by_index > 0).sum().item()
+            per_token_nz = (activations_by_index > 0).sum(dim=0).tolist()
+            logger.info("VLM DEBUG top_k=%d applied: total_nonzero=%d, per_token_nonzero=%s", top_k, total_nz, per_token_nz)
 
         """Process activations for a single layer."""
         # VLM change: debug logging for activation tensor shape
@@ -464,6 +526,10 @@ class ActivationProcessor:
         # this is now done in the activation part
         # if request.ignore_bos and Model.get_instance().cfg.default_prepend_bos:
         #     sorted_activations = sorted_activations[sorted_activations[:, 3] != 0]
+
+        # VLM change: when top-k is applied, features zeroed for all tokens have max_value=0 — exclude them
+        if request.top_k is not None and request.top_k > 0:
+            sorted_activations = sorted_activations[sorted_activations[:, 2] > 0]
 
         top_results = sorted_activations[: request.num_results]
         # VLM debug: log top results max_value and max_index

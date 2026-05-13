@@ -24,12 +24,12 @@ export const MAX_RUNPOD_JOBS_IN_QUEUE = 1000;
 export const RUNPOD_BUSY_ERROR = 'RUNPOD_BUSY';
 
 export const GRAPH_MAX_PROMPT_LENGTH_CHARS = 10000;
-export const GRAPH_BATCH_SIZE = 48;
+export const GRAPH_BATCH_SIZE = 8; // VLM change: reduced from 48 to fit 24GB GPU with 40960-feature transcoders
 // this time estimate comes from testing different prompt lengths with batch size 48, and is only valid for gemma-2-2b, for a40
 // with nnsight we are using lazy encoder, so we need to add time for this
 export const getEstimatedTimeFromNumTokens = (numTokens: number, nnsight: boolean = false) =>
   11.2 * Math.log2(Math.max(numTokens, 4)) - 7 + (nnsight ? 20 : 0); // add a few seconds buffer
-export const GRAPH_MAX_TOKENS = 64;
+export const GRAPH_MAX_TOKENS = 512;
 export const GRAPH_GENERATION_ENABLED_MODELS = ['gemma-2-2b', 'gemma-3-4b-it', 'qwen3-4b'];
 export const GRAPH_MODEL_MAP = {
   'gemma-2-2b': 'google/gemma-2-2b',
@@ -66,8 +66,8 @@ export const graphGenerateSchemaClient = yup.object({
   prompt: yup
     .string()
     .max(GRAPH_MAX_PROMPT_LENGTH_CHARS, `Prompt cannot exceed ${GRAPH_MAX_PROMPT_LENGTH_CHARS} characters.`)
-    .min(1, 'Prompt is required.')
-    .required(),
+    .default(''),
+  imageBase64: yup.string().optional(),
   modelId: yup.string().min(1, 'Model is required.').oneOf(GRAPH_GENERATION_ENABLED_MODELS).required(),
   sourceSetName: yup.string().nullable(),
   maxNLogits: yup
@@ -102,6 +102,7 @@ export const graphGenerateSchemaClient = yup.object({
     .max(GRAPH_MAXFEATURENODES_MAX, `Must be at most ${GRAPH_MAXFEATURENODES_MAX}.`)
     .default(GRAPH_MAXFEATURENODES_DEFAULT)
     .required('This field is required.'),
+  topKPerPosition: yup.number().integer('Must be an integer.').min(0).max(500).default(0).notRequired(),
   slug: yup.string(),
 });
 
@@ -145,6 +146,7 @@ export const getGraphTokenize = async (
   desiredLogitProb: number,
   modelId: string,
   sourceSetName: string,
+  imageBase64?: string,
 ): Promise<GraphTokenizeResponse> => {
   const isRunpodServerlessHost = await getIsRunpodServerlessHostForSourceSet(modelId, sourceSetName);
   const action = 'forward-pass';
@@ -153,6 +155,7 @@ export const getGraphTokenize = async (
     max_n_logits: maxNLogits,
     desired_logit_prob: desiredLogitProb,
     request_type: action,
+    image_base64: imageBase64,
   };
 
   const response = await fetch(
@@ -208,6 +211,8 @@ export const generateGraphAndUploadToS3 = async (
   maxFeatureNodes: number,
   signedUrl: string,
   userId: string | undefined,
+  imageBase64?: string,
+  topKPerPosition?: number,
 ) => {
   const isRunpodServerlessHost = await getIsRunpodServerlessHostForSourceSet(modelId, sourceSetName);
   const action = 'generate-graph';
@@ -223,7 +228,15 @@ export const generateGraphAndUploadToS3 = async (
     max_feature_nodes: maxFeatureNodes,
     signed_url: signedUrl,
     user_id: userId,
+    image_base64: imageBase64,
+    top_k_per_position: topKPerPosition ?? 0,
   };
+  // Use longer timeout for graph generation (CPU-bound transcoder ops can take 30+ min).
+  // Use eval to import undici without webpack trying to bundle it for the browser.
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval
+  const undiciImport = new Function("return import('undici')") as () => Promise<any>;
+  const { Agent } = await undiciImport();
+  const dispatcher = new Agent({ headersTimeout: 60 * 60 * 1000, bodyTimeout: 60 * 60 * 1000 });
   const response = await fetch(
     `${await getGraphServerRequestUrlForSourceSet(modelId, sourceSetName, action, isRunpodServerlessHost)}`,
     {
@@ -233,6 +246,8 @@ export const generateGraphAndUploadToS3 = async (
         ...getAuthHeaderForGraphServerRequest(isRunpodServerlessHost),
       },
       body: JSON.stringify(wrapRequestBodyForRunpodIfNeeded(body, isRunpodServerlessHost)),
+      // @ts-expect-error - dispatcher is a Node-only fetch extension
+      dispatcher,
     },
   );
 

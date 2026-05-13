@@ -1,9 +1,25 @@
 # VLM change: mounts vlm_transcoder_circuits repo and SAE weights into the inference container
 services:
   inference:
+    # VLM change: Docker maps the requested GPU (CUDA_DEVICE) to a single /dev/nvidia* inside
+    # the container, but CUDA_VISIBLE_DEVICES from .env still points at the host index.
+    # Override to 0 so PyTorch sees the one GPU Docker actually passed through.
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+    # VLM change: reinstall torch with cu124 wheels to match host driver (supports up to CUDA 12.4)
+    # before starting the inference server, so the GPU is actually used.
+    # This overrides the command from compose.inference.dev.yaml (last file wins in compose merge).
+    command: >
+      sh -c "pip install torch==2.6.0+cu124 torchvision==0.21.0+cu124 --index-url https://download.pytorch.org/whl/cu124 -q &&
+        pip install -e /app/packages/python/neuronpedia-inference-client -q &&
+        if [ \"$$RELOAD\" = \"1\" ]; then
+          python start.py --reload;
+        else
+          python start.py;
+        fi"
     volumes:
       # VLM change: mount the vlm_transcoder_circuits repo so vlm_hooks can be imported
       - /home/nxiros/workspace/Neuronpedia/vlm_transcoder_circuits:/vlm_transcoder_circuits:ro
       # VLM change: mount the directory containing your SAE .pt checkpoint files
       # Change the left side to wherever your .pt files actually live
-      - /home/nxiros/workspace/Neuronpedia/neuronpedia/sae_weights/VLM/SAE:/sae_weights:ro
+      - /home/nxiros/workspace/Neuronpedia/neuronpedia/sae_weights:/sae_weights:ro

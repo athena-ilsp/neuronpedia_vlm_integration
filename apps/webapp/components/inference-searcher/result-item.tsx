@@ -5,14 +5,105 @@ import { InferenceActivationAllResult } from '@/components/provider/inference-ac
 import { replaceHtmlAnomalies } from '@/lib/utils/activations';
 import { ExplanationPartialWithRelations } from '@/prisma/generated/zod';
 
-// VLM change: replace raw image patch token strings with human-readable labels
-function labelTokens(tokens: string[]): string[] {
-  const firstPatchIdx = tokens.findIndex((t) => t === '<image_soft_token>');
-  if (firstPatchIdx === -1) return tokens;
-  return tokens.map((t, i) => {
-    if (t === '<image_soft_token>') return `Patch_${i - firstPatchIdx + 1}`;
-    return t;
-  });
+export const VLM_PATCH_CELL = 20; // px per patch cell, shared with inference-searcher
+
+// VLM change: 16×16 patch grid overlaid on the image, with activation highlights and optional click-to-select
+export function ImagePatchGrid({
+  patchValues,
+  maxValue,
+  imageBase64,
+  selectedPatchIndexes,
+  firstPatchTokenIndex,
+  onPatchClick,
+}: {
+  patchValues: number[];
+  maxValue: number;
+  imageBase64: string;
+  selectedPatchIndexes?: number[];
+  firstPatchTokenIndex?: number;
+  onPatchClick?: (tokenIndex: number) => void;
+}) {
+  const COLS = 16;
+  const ROWS = Math.ceil(patchValues.length / COLS);
+  const CELL = VLM_PATCH_CELL;
+  return (
+    <span
+      className="relative mx-1 inline-block flex-shrink-0 align-middle"
+      style={{ width: COLS * CELL, height: ROWS * CELL }}
+    >
+      {/* base image */}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={`data:image/jpeg;base64,${imageBase64}`}
+        alt="input"
+        className="absolute inset-0 h-full w-full rounded object-fill"
+      />
+      {/* one cell per patch */}
+      {patchValues.map((val, idx) => {
+        const col = idx % COLS;
+        const row = Math.floor(idx / COLS);
+        const strength = maxValue > 0 ? Math.min(val / maxValue, 1) : 0;
+        const tokenIdx = firstPatchTokenIndex !== undefined ? firstPatchTokenIndex + idx : idx;
+        const isSelected = selectedPatchIndexes?.includes(tokenIdx) ?? false;
+        const borderColor = isSelected
+          ? 'rgba(14, 165, 233, 0.95)'
+          : strength > 0
+            ? `rgba(34, 197, 94, ${0.4 + strength * 0.6})`
+            : 'rgba(255,255,255,0.18)';
+        const borderWidth = isSelected ? 3 : strength > 0 ? Math.max(1, Math.round(strength * 3)) : 1;
+        const bgColor = isSelected
+          ? 'rgba(14, 165, 233, 0.25)'
+          : strength > 0
+            ? `rgba(34, 197, 94, ${0.15 + strength * 0.55})`
+            : 'transparent';
+        // tooltip label — shown above the cell on hover
+        const tooltipText = isSelected
+          ? `Patch ${idx + 1}${val > 0 ? ` · ${val.toFixed(2)}` : ' · selected'}`
+          : val > 0
+            ? `Patch ${idx + 1} · ${val.toFixed(2)}`
+            : `Patch ${idx + 1}`;
+        // position tooltip: flip to bottom for top rows, flip to left for right edge patches
+        const tooltipTop = row < 3;
+        const tooltipRight = col >= COLS - 4;
+        return (
+          <span
+            key={idx}
+            className="group/patch"
+            onClick={onPatchClick ? (e) => { e.preventDefault(); onPatchClick(tokenIdx); } : undefined}
+            style={{
+              position: 'absolute',
+              left: col * CELL,
+              top: row * CELL,
+              width: CELL,
+              height: CELL,
+              boxSizing: 'border-box',
+              border: `${borderWidth}px solid ${borderColor}`,
+              backgroundColor: bgColor !== 'transparent' ? bgColor : undefined,
+              cursor: onPatchClick ? 'pointer' : 'default',
+              zIndex: 1,
+            }}
+          >
+            {/* hover tooltip */}
+            <span
+              style={{
+                position: 'absolute',
+                [tooltipTop ? 'top' : 'bottom']: '100%',
+                [tooltipRight ? 'right' : 'left']: 0,
+                marginTop: tooltipTop ? 2 : undefined,
+                marginBottom: tooltipTop ? undefined : 2,
+                whiteSpace: 'nowrap',
+                pointerEvents: 'none',
+                zIndex: 50,
+              }}
+              className="hidden rounded bg-slate-800 px-1.5 py-0.5 text-[11px] font-semibold text-white shadow-lg group-hover/patch:block"
+            >
+              {tooltipText}
+            </span>
+          </span>
+        );
+      })}
+    </span>
+  );
 }
 
 export default function ResultItem({
@@ -21,16 +112,41 @@ export default function ResultItem({
   topExplanation,
   searchSortIndexes,
   showDashboards,
+  searchImageBase64,
+  onPatchClick,
 }: {
   result: InferenceActivationAllResult;
   tokens: string[];
   topExplanation: ExplanationPartialWithRelations | undefined;
   searchSortIndexes: number[];
   showDashboards: boolean;
+  searchImageBase64?: string;
+  onPatchClick?: (tokenIndex: number) => void;
 }) {
   const { getSourceSet } = useGlobalContext();
-  // VLM change: use labeled tokens for display
-  const displayTokens = labelTokens(tokens);
+
+  // VLM change: build display tokens and patch info
+  const firstPatchIdx = tokens.findIndex((t) => t === '<image_soft_token>');
+  const hasImageTokens = firstPatchIdx !== -1 && !!searchImageBase64;
+  // For non-image tokens, strip out image patch tokens and remap values
+  const textOnlyTokens = hasImageTokens ? tokens.filter((t) => t !== '<image_soft_token>') : tokens;
+  const textOnlyValues = hasImageTokens
+    ? result.values.filter((_, i) => tokens[i] !== '<image_soft_token>')
+    : result.values;
+  const patchValues = hasImageTokens ? tokens.map((t, i) => (t === '<image_soft_token>' ? result.values[i] : 0)).filter((_, i) => tokens[i] === '<image_soft_token>') : [];
+  const patchMaxValue = patchValues.length > 0 ? Math.max(...patchValues) : 0;
+  // Remap maxValueIndex for text-only display
+  let displayMaxValueIndex = result.maxValueIndex;
+  if (hasImageTokens) {
+    const isMaxInPatch = tokens[result.maxValueIndex] === '<image_soft_token>';
+    if (isMaxInPatch) {
+      displayMaxValueIndex = 0;
+    } else {
+      displayMaxValueIndex = tokens.slice(0, result.maxValueIndex).filter((t) => t !== '<image_soft_token>').length;
+    }
+  }
+  const displayTokens = hasImageTokens ? textOnlyTokens : tokens;
+  const displayValues = hasImageTokens ? textOnlyValues : result.values;
   return (
     <a
       href={`/${result.modelId}/${result.layer}/${result.index}`}
@@ -87,27 +203,43 @@ export default function ResultItem({
             ) : (
               <div className="flex flex-col items-center gap-y-0.5 px-2 text-xs text-slate-700">
                 <div className="whitespace-pre rounded bg-slate-200 px-1 font-mono font-medium">
-                  {replaceHtmlAnomalies(displayTokens[result.maxValueIndex])}
+                  {hasImageTokens && tokens[result.maxValueIndex] === '<image_soft_token>'
+                    ? `Patch ${result.maxValueIndex - tokens.findIndex((t) => t === '<image_soft_token>') + 1}`
+                    : replaceHtmlAnomalies(displayTokens[displayMaxValueIndex])}
                 </div>
                 <span className="mt-0 text-[11px] text-emerald-700">{result.maxValue.toFixed(1)}</span>
               </div>
             )}
-            <ActivationItem
-              showLineBreaks={false}
-              activation={{
-                values: result.values,
-                tokens: displayTokens,
-                maxValueTokenIndex: result.maxValueIndex,
-                maxValue: result.maxValue,
-                dfaValues: result.dfaValues,
-                dfaMaxValue: result.dfaMaxValue,
-                dfaTargetIndex: result.dfaTargetIndex,
-              }}
-              enableExpanding={false}
-              overrideLeading="leading-none"
-              overrideTextSize="text-xs"
-              dfa={getSourceSet(result.neuron?.modelId || '', result.neuron?.sourceSetName || '')?.showDfa}
-            />
+            <div className="flex flex-row flex-wrap items-center gap-x-1">
+              {displayTokens.length > 0 && (
+                <ActivationItem
+                  showLineBreaks={false}
+                  activation={{
+                    values: displayValues,
+                    tokens: displayTokens,
+                    maxValueTokenIndex: displayMaxValueIndex,
+                    maxValue: result.maxValue,
+                    dfaValues: result.dfaValues,
+                    dfaMaxValue: result.dfaMaxValue,
+                    dfaTargetIndex: result.dfaTargetIndex,
+                  }}
+                  enableExpanding={false}
+                  overrideLeading="leading-none"
+                  overrideTextSize="text-xs"
+                  dfa={getSourceSet(result.neuron?.modelId || '', result.neuron?.sourceSetName || '')?.showDfa}
+                />
+              )}
+              {hasImageTokens && (
+                <ImagePatchGrid
+                  patchValues={patchValues}
+                  maxValue={patchMaxValue}
+                  imageBase64={searchImageBase64!}
+                  selectedPatchIndexes={searchSortIndexes}
+                  firstPatchTokenIndex={firstPatchIdx}
+                  onPatchClick={onPatchClick}
+                />
+              )}
+            </div>
           </div>
 
           {showDashboards && result.neuron && (

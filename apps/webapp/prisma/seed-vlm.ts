@@ -12,32 +12,22 @@ const prisma = new PrismaClient();
 
 // VLM change: configure these to match your setup
 const MODEL_ID = 'gemma-3-4b-it'; // appears in URLs: localhost:3000/gemma-3-4b-it/...
-const SOURCE_SET_NAME = 'vlm-sae'; // SAE set name, appears in URL after model: .../vlm-sae/...
+const SET_SAE_NAME = 'SAE-200m-8x';
+const SET_TC_NAME = 'Transcoders-200m-16x';
+const SET_TC_300M_NAME = 'Transcoders-300m-16x';
 
 // VLM change: one entry per SAE layer you have weights for.
 // key = source ID as it appears in the URL (e.g. "10-vlm-sae" → localhost:3000/gemma-3-4b-it/10-vlm-sae/0)
 // value = number of features (neurons) in that SAE
-const SOURCES: Record<string, number> = {
-  "0-vlm-sae": 20480,
-  "1-vlm-sae": 20480,
-  "2-vlm-sae": 20480,
-  "10-vlm-sae": 20480,
-  "11-vlm-sae": 20480,
-  "12-vlm-sae": 20480,
-  "13-vlm-sae": 20480,
-  "15-vlm-sae": 20480,
-  "16-vlm-sae": 20480,
-  "17-vlm-sae": 20480,
-  "18-vlm-sae": 20480,
-  "19-vlm-sae": 20480,
-  "20-vlm-sae": 20480,
-  "21-vlm-sae": 20480,
-  "22-vlm-sae": 20480,
-  "24-vlm-sae": 20480,
-  "25-vlm-sae": 20480,
-  "26-vlm-sae": 20480,
-  "27-vlm-sae": 20480,
-};
+const SOURCES_SAE: Record<string, number> = {};
+const SOURCES_TC: Record<string, number> = {};
+const SOURCES_TC_300M: Record<string, number> = {};
+for (let i = 0; i <= 33; i++) {
+  SOURCES_SAE[`${i}-SAE-200m-8x`] = 20480;
+  SOURCES_TC[`${i}-Transcoders-200m-16x`] = 40960;
+  SOURCES_TC_300M[`${i}-Transcoders-300m-16x`] = 40960;
+}
+
 
 // VLM change: URL of the local inference server (default for localhost dev)
 const INFERENCE_HOST_URL = 'http://localhost:5002';
@@ -46,6 +36,12 @@ const INFERENCE_HOST_URL = 'http://localhost:5002';
 const ADMIN_USER_ID = 'clkht01d40000jv08hvalcvly';
 
 async function main() {
+  console.log('Cleaning up old source sets...');
+  await prisma.source.deleteMany({ where: { modelId: MODEL_ID, setName: 'vlm-sae' } });
+  await prisma.sourceSet.deleteMany({ where: { modelId: MODEL_ID, name: 'vlm-sae' } });
+  await prisma.source.deleteMany({ where: { modelId: MODEL_ID, setName: SET_TC_300M_NAME } });
+  await prisma.sourceSet.deleteMany({ where: { modelId: MODEL_ID, name: SET_TC_300M_NAME } });
+
   // VLM change: upsert the model
   const model = await prisma.model.upsert({
     where: { id: MODEL_ID },
@@ -67,55 +63,64 @@ async function main() {
   });
   console.log('Model:', model.id);
 
-  // VLM change: upsert the source set
-  const sourceSet = await prisma.sourceSet.upsert({
-    where: { modelId_name: { modelId: MODEL_ID, name: SOURCE_SET_NAME } },
-    update: {},
-    create: {
-      modelId: MODEL_ID,
-      name: SOURCE_SET_NAME,
-      description: 'VLM SAE trained on Gemma 3 4B IT',
-      type: 'sae',
-      creatorName: 'Local',
-      creatorId: ADMIN_USER_ID,
-      urls: [],
-      visibility: 'UNLISTED',
-      hasDashboards: true,
-      allowInferenceSearch: true,
-    },
-  });
-  console.log('SourceSet:', sourceSet.name);
+  // Source Sets
+  const configurations = [
+    { name: SET_SAE_NAME, desc: 'VLM SAE trained on Gemma 3 4B IT', type: 'sae', sources: SOURCES_SAE },
+    { name: SET_TC_NAME, desc: 'VLM Transcoder trained on Gemma 3 4B IT', type: 'sae', sources: SOURCES_TC },
+    { name: SET_TC_300M_NAME, desc: 'VLM Transcoder 300M trained on Gemma 3 4B IT', type: 'sae', sources: SOURCES_TC_300M },
+  ];
 
-  // VLM change: upsert each source (one per SAE layer)
-  for (const [sourceId, numFeatures] of Object.entries(SOURCES)) {
-    const source = await prisma.source.upsert({
-      where: { modelId_id: { modelId: MODEL_ID, id: sourceId } },
-      update: {},
+  for (const config of configurations) {
+    await prisma.sourceSet.upsert({
+      where: { modelId_name: { modelId: MODEL_ID, name: config.name } },
+      update: { visibility: 'PUBLIC' },
       create: {
-        id: sourceId,
         modelId: MODEL_ID,
-        setName: SOURCE_SET_NAME,
+        name: config.name,
+        description: config.desc,
+        type: config.type,
+        creatorName: 'Local',
         creatorId: ADMIN_USER_ID,
-        inferenceEnabled: true,
+        urls: [],
+        visibility: 'PUBLIC',
         hasDashboards: true,
-        visibility: 'UNLISTED',
+        allowInferenceSearch: true,
       },
     });
-    console.log('Source:', source.id, '— features:', numFeatures);
+    console.log('Upserted SourceSet:', config.name);
+  }
 
-    // VLM change: create neurons (features) for this source so feature pages work
-    // This creates stubs — activations are computed live by the inference server
-    await prisma.neuron.createMany({
-      data: Array.from({ length: numFeatures }, (_, i) => ({
-        modelId: MODEL_ID,
-        layer: sourceId,
-        index: String(i),
-        maxActApprox: 1.0, // VLM change: must be > 0 for browser to show features
-        creatorId: ADMIN_USER_ID,
-      })),
-      skipDuplicates: true,
-    });
-    console.log(`Created ${numFeatures} neuron stubs for ${sourceId}`);
+  // Upsert Sources
+  for (const config of configurations) {
+    for (const [sourceId, numFeatures] of Object.entries(config.sources)) {
+      await prisma.source.upsert({
+        where: { modelId_id: { modelId: MODEL_ID, id: sourceId } },
+        update: { visibility: 'PUBLIC' },
+        create: {
+          id: sourceId,
+          modelId: MODEL_ID,
+          setName: config.name,
+          creatorId: ADMIN_USER_ID,
+          inferenceEnabled: true,
+          hasDashboards: true,
+          visibility: 'PUBLIC',
+        },
+      });
+      
+      // Feature stubs via Postgres raw insert query to bypass 32k query limit overhead on massive lists!
+      // (Prisma createMany falls over on >30k records, we do it in batches or simple loop if needed. Here skipDuplicates is ok because we deleted vlm-sae above.)
+      await prisma.neuron.createMany({
+        data: Array.from({ length: numFeatures }, (_, i) => ({
+          modelId: MODEL_ID,
+          layer: sourceId,
+          index: String(i),
+          maxActApprox: 1.0,
+          creatorId: ADMIN_USER_ID,
+        })),
+        skipDuplicates: true,
+      });
+      console.log(`Created ${numFeatures} neuron stubs for ${sourceId}`);
+    }
   }
 
   // VLM change: upsert inference host pointing at local inference server
@@ -133,7 +138,7 @@ async function main() {
   console.log('InferenceHost:', inferenceHost.id, '@', inferenceHost.hostUrl);
 
   // VLM change: link each source to the inference host
-  for (const sourceId of Object.keys(SOURCES)) {
+  for (const sourceId of Object.keys({...SOURCES_SAE, ...SOURCES_TC, ...SOURCES_TC_300M})) {
     await prisma.inferenceHostSourceOnSource.upsert({
       where: {
         sourceId_sourceModelId_inferenceHostId: {
@@ -153,19 +158,59 @@ async function main() {
   }
 
   // VLM change: set the default source so /gemma-3-4b-it redirects to a source automatically
-  const firstSourceId = Object.keys(SOURCES)[0];
+  const firstSourceId = Object.keys({...SOURCES_SAE, ...SOURCES_TC})[0];
   if (firstSourceId) {
     await prisma.model.update({
       where: { id: MODEL_ID },
       data: {
-        defaultSourceSetName: SOURCE_SET_NAME,
+        defaultSourceSetName: SET_SAE_NAME,
         defaultSourceId: firstSourceId,
+        defaultGraphSourceSetName: SET_TC_NAME,
       },
     });
     console.log('Set default source:', firstSourceId);
   }
 
-  console.log('\nDone! Visit: http://localhost:3000/gemma-3-4b-it/' + Object.keys(SOURCES)[0] + '/0');
+  // VLM change: enable graph generation on the TC source set
+  await prisma.sourceSet.update({
+    where: { name_modelId: { name: SET_TC_NAME, modelId: MODEL_ID } },
+    data: { graphEnabled: true },
+  });
+  console.log('Enabled graphEnabled on sourceSet:', SET_TC_NAME);
+
+  // VLM change: register local graph server so /gemma-3-4b-it/graph can generate circuits
+  const graphHostSource = await prisma.graphHostSource.upsert({
+    where: { id: 'local-gemma3-4b-it-graph' },
+    update: { hostUrl: 'http://graph:5004' },
+    create: {
+      id: 'local-gemma3-4b-it-graph',
+      name: 'Local Gemma3-4B-IT Graph Server',
+      hostUrl: 'http://graph:5004',
+      modelId: MODEL_ID,
+    },
+  });
+  console.log('GraphHostSource:', graphHostSource.id);
+
+  for (const tcSetName of [SET_TC_NAME, SET_TC_300M_NAME]) {
+    await prisma.graphHostSourceOnSourceSet.upsert({
+      where: {
+        sourceSetName_sourceSetModelId_graphHostSourceId: {
+          sourceSetName: tcSetName,
+          sourceSetModelId: MODEL_ID,
+          graphHostSourceId: graphHostSource.id,
+        },
+      },
+      update: {},
+      create: {
+        sourceSetName: tcSetName,
+        sourceSetModelId: MODEL_ID,
+        graphHostSourceId: graphHostSource.id,
+      },
+    });
+    console.log('GraphHostSourceOnSourceSet linked:', tcSetName, '→', graphHostSource.id);
+  }
+
+  console.log('\nDone! Visit: http://localhost:3000/gemma-3-4b-it/' + Object.keys({...SOURCES_SAE, ...SOURCES_TC})[0] + '/0');
   console.log('NOTE: if layer_10 stubs exist from a previous run, delete them:');
   console.log("  DELETE FROM \"Neuron\" WHERE \"modelId\" = 'gemma-3-4b-it' AND layer = 'layer_10';");
 }

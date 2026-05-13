@@ -113,6 +113,9 @@ export const POST = withAuthedUser(async (request: RequestAuthedUser) => {
         accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
         secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
       },
+      ...(process.env.AWS_ENDPOINT_URL
+        ? { endpoint: process.env.AWS_ENDPOINT_URL, forcePathStyle: true }
+        : {}),
     });
 
     // Create the command for putting an object

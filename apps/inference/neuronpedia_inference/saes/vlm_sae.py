@@ -31,11 +31,18 @@ class VlmSAEWrapper:
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         """Encode activations to feature activations.
 
+        SAEs are kept on CPU to save VRAM. Move to input device for the forward
+        pass, then move back to CPU immediately after.
+
         The VLM SAE forward returns (sae_out, feature_acts, loss, mse, l1, ghost).
         We only need feature_acts for inference.
         """
+        target_device = x.device
+        if next(self.inner.parameters()).device != target_device:
+            self.inner.to(target_device)
         with torch.no_grad():
             _, feature_acts, *_ = self.inner(x)
+        self.inner.to("cpu")
         return feature_acts
 
     def to(self, device: str) -> "VlmSAEWrapper":
@@ -71,8 +78,8 @@ class VlmSAE(BaseSAE):
         from sae_training.sparse_autoencoder import SparseAutoencoder
 
         logger.info(f"Loading VLM SAE from: {path}")
+        # Keep on CPU — encode() will move to GPU only for the forward pass
         sae = SparseAutoencoder.from_pretrained(path, device="cpu")
-        sae.to(device)
         sae.eval()
 
         hook_name = sae.cfg.hook_point

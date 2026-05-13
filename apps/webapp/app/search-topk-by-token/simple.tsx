@@ -171,7 +171,7 @@ export default function SearchTopkByTokenSimple({
   const modelIdChangedCallback = (newModelId: string) => {
     if (globalModels[newModelId]) {
       setModelId(newModelId);
-      const sourceSetFirst = getFirstSourceSetForModel(globalModels[newModelId], Visibility.PUBLIC, true, false);
+      const sourceSetFirst = getFirstSourceSetForModel(globalModels[newModelId], Visibility.UNLISTED, true, false);
       setSourceSet(sourceSetFirst?.name || '');
     }
   };

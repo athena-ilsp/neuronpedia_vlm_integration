@@ -157,8 +157,9 @@ export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
     return NextResponse.json({ message: error instanceof Error ? error.message : 'Unknown Error' }, { status: 500 });
   }
 
-  // VLM change: image searches are never cached (imageBase64 is not part of the saved search key)
+  // VLM change: image searches and topK searches are never cached
   const isImageSearch = !!body.imageBase64;
+  const isTopKSearch = body.topK !== undefined && body.topK !== null;
 
   // if it's a batch search, we don't need to check savedSearch or fetch the feature
   if (Array.isArray(body.text)) {
@@ -197,8 +198,8 @@ export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
 
     return NextResponse.json({ results: batchResults });
   }
-  // see if we found this before (skip cache for image searches — imageBase64 is not part of the key)
-  const savedSearch = !isImageSearch && await prisma.savedSearch.findUnique({
+  // see if we found this before (skip cache for image/topK searches)
+  const savedSearch = !isImageSearch && !isTopKSearch && await prisma.savedSearch.findUnique({
     where: {
       modelId_query: {
         modelId,
@@ -293,7 +294,7 @@ export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
       body.ignoreBos,
       request.user,
       body.imageBase64, // VLM change: pass image for VLM models
-      body.activationThreshold, // VLM change: pass activation threshold
+      body.topK, // VLM change: pass top-k features per token
     )) as ActivationAllPost200Response;
 
     console.log('got activations: ', result.activations.length);
@@ -441,6 +442,8 @@ export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
 
     if (DEMO_MODE) {
       console.log('skipping saved search creation in demo mode');
+    } else if (isTopKSearch || isImageSearch) {
+      console.log('skipping saved search creation for topK/image search');
     } else {
       // eslint-disable-next-line
       const savedSearch = await prisma.savedSearch.create({

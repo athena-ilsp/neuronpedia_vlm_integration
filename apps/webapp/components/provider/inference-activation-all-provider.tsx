@@ -42,7 +42,7 @@ export const [InferenceActivationAllContext, useInferenceActivationAllContext] =
     ignoreBos: boolean,
     sortIndex: number[],
     imageBase64?: string, // VLM change: optional image for VLM models
-    activationThreshold?: number, // VLM change: optional activation threshold for under-sparse SAEs
+    topK?: number, // VLM change: keep only top K features per token
   ) => void;
   tokens: string[];
   setTokens: React.Dispatch<React.SetStateAction<string[]>>;
@@ -89,7 +89,7 @@ export default function InferenceActivationAllProvider({ children }: { children:
     ignoreBos: boolean,
     sortIndexes: number[] = [],
     imageBase64?: string, // VLM change: optional image for VLM models
-    activationThreshold?: number, // VLM change: optional activation threshold for under-sparse SAEs
+    topK?: number, // VLM change: keep only top K features per token
   ) {
     if (!selectedLayers) {
       alert('Please select at least one layer to search.');
@@ -110,8 +110,8 @@ export default function InferenceActivationAllProvider({ children }: { children:
         ignoreBos,
         // VLM change: include imageBase64 if provided
         ...(imageBase64 ? { imageBase64 } : {}),
-        // VLM change: include activationThreshold if provided
-        ...(activationThreshold !== undefined ? { activationThreshold } : {}),
+        // VLM change: include topK if provided
+        ...(topK !== undefined ? { topK } : {}),
       }),
     })
       .then((response) => response.json())

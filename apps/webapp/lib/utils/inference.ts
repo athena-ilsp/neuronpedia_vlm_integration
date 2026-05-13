@@ -500,7 +500,7 @@ export const runInferenceActivationAll = async (
   ignoreBos: boolean,
   user: AuthenticatedUser | null,
   imageBase64?: string, // VLM change: optional image for VLM models
-  activationThreshold?: number, // VLM change: optional activation threshold for under-sparse SAEs
+  topK?: number, // VLM change: keep only top K features per token
 ) => {
   // TODO: we don't currently support search-all on different instances
   const serverHost = await getOneRandomServerHostForSourceSet(modelId, sourceSetName, user);
@@ -523,21 +523,21 @@ export const runInferenceActivationAll = async (
       },
     });
   }
-  return makeInferenceServerApiWithServerHost(serverHost).activationAllPost({
-    activationAllPostRequest: {
-      prompt: text,
-      model: transformerLensModelId,
-      selectedSources: selectedLayers,
-      sortByTokenIndexes: sortIndexes,
-      sourceSet: sourceSetName,
-      ignoreBos,
-      numResults,
-      // VLM change: include imageBase64 if provided
-      ...(imageBase64 ? { imageBase64 } : {}),
-      // VLM change: include activationThreshold if provided
-      ...(activationThreshold !== undefined ? { activationThreshold } : {}),
-    },
-  });
+  const activationAllPostRequest = {
+    prompt: text,
+    model: transformerLensModelId,
+    selectedSources: selectedLayers,
+    sortByTokenIndexes: sortIndexes,
+    sourceSet: sourceSetName,
+    ignoreBos,
+    numResults,
+    // VLM change: include imageBase64 if provided
+    ...(imageBase64 ? { imageBase64 } : {}),
+    // VLM change: include topK if provided
+    ...(topK !== undefined ? { topK } : {}),
+  };
+  console.log('VLM DEBUG runInferenceActivationAll request topK=', topK, 'req.topK=', (activationAllPostRequest as any).topK);
+  return makeInferenceServerApiWithServerHost(serverHost).activationAllPost({ activationAllPostRequest });
 };
 
 // TODO: steerCompletion should also support parallel inference with two servers

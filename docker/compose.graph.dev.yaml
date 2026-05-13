@@ -2,12 +2,29 @@ services:
   graph:
     volumes:
       - ./apps/graph:/app/apps/graph
+      # VLM change: mount circuit-tracer cache so local transcoders are accessible inside container
+      - ${HOME}/.cache/circuit_tracer:/root/.cache/circuit_tracer
     environment:
       - RELOAD=${RELOAD:-0}
       - MODEL_ID=${MODEL_ID:-google/gemma-2-2b}
-    command: >    
+      # VLM change: default to local VLM transcoders when MODEL_ID is the VLM model
+      - TRANSCODER_SET=${TRANSCODER_SET:-local/gemma-3-4b-it-tc-200m-16x}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-1}
+      # GRAPH_DEVICE_MAP / GRAPH_MAX_MEMORY are intentionally NOT set: device_map="auto"
+      # with a 6GiB cap caused parts of Gemma to land on meta tensors (no actual data).
+      # Our transcoder CPU patches alone leave ~16GB headroom, so the model fits on GPU.
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - MAX_FEATURE_NODES=${MAX_FEATURE_NODES:-500}
+      - TOKEN_LIMIT=${TOKEN_LIMIT:-512}
+      - MAX_BATCH_SIZE=${MAX_BATCH_SIZE:-1}
+      # Top-K features per token position (0 = no filter). Mimics inference search "top K".
+      - GRAPH_TOP_K=${GRAPH_TOP_K:-10}
+      # Speed up Python GC for image attribution which creates many large transient tensors
+      - PYTHONMALLOC=malloc
+      - MALLOC_TRIM_THRESHOLD_=131072
+    command: >
       sh -c "if [ \"$$RELOAD\" = \"1\" ]; then
-        python start.py --model_id \"$$MODEL_ID\" --reload;
+        python start.py --model_id \"$$MODEL_ID\" --transcoder_set \"$$TRANSCODER_SET\" --reload;
       else
-        python start.py --model_id \"$$MODEL_ID\";
+        python start.py --model_id \"$$MODEL_ID\" --transcoder_set \"$$TRANSCODER_SET\";
       fi"

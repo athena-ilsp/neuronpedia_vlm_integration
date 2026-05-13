@@ -23,8 +23,8 @@ export default async function PageModel({ model }: { model: ModelWithPartialRela
     },
   });
 
-  const firstSourceSet = getFirstSourceSetForModel(model, Visibility.PUBLIC, false, false);
-  const firstSource = getFirstSourceForModel(model, Visibility.PUBLIC, false, false);
+  const firstSourceSet = getFirstSourceSetForModel(model, Visibility.UNLISTED, false, false);
+  const firstSource = getFirstSourceForModel(model, Visibility.UNLISTED, false, false);
   return (
     <div className="flex w-full flex-col items-center pb-10">
       <BreadcrumbsComponent
