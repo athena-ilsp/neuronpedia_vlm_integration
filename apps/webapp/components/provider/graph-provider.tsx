@@ -288,7 +288,7 @@ export function GraphProvider({
   };
 
   const getFilterGraphTypeForCurrentUser = (graph: GraphMetadata) => {
-    if (session.data?.user?.id === graph.userId) {
+    if (session.data?.user?.id === graph.userId || !graph.userId) {
       return FilterGraphType.Mine;
     }
     if (graph.isFeatured) {

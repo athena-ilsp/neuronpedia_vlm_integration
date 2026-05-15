@@ -50,24 +50,66 @@
 
 # VLM Integration for Visualizing (Gemma-3 + Custom SAEs)
 
-This fork patches Neuronpedia so the existing UI (activation search, feature pages, steering, token heatmaps, circuit tracing) works with Vision-Language Models — specifically `google/gemma-3-4b-it` and custom-trained SAEs/transcoders. Images and text are supported through the same flows; no new pages were added.
+This fork extends Neuronpedia so the existing UI (activation search, feature pages, steering, token heatmaps, circuit tracing) works with **Vision-Language Models** — specifically `google/gemma-3-4b-it` and our own SAEs/transcoders trained on its activations. The original codebase was built around text-only language models with [sae-lens](https://github.com/jbloomAus/SAELens) SAEs loaded from HuggingFace; we kept all of that intact and added a parallel VLM path that flows images and text through the same UI, the same activation endpoints, and the same circuit-tracing pipeline.
+
+The intent of this section is to give a partner forking this repo a conceptual map of *what we changed and why*, without diving into individual diffs. For the full technical writeup see [VLM_INTEGRATION_REPORT.md](VLM_INTEGRATION_REPORT.md).
+
+## Inference server — [apps/inference/](apps/inference/)
+
+The hardest part was teaching the inference server to host a model it was never designed for. Neuronpedia assumes a `HookedTransformer` (text-only, hooks already exposed); Gemma-3 VLM is a HuggingFace `Gemma3ForConditionalGeneration` with image preprocessing and no built-in activation hooks.
+
+- **Model adapter** ([models/vlm_model_adapter.py](apps/inference/neuronpedia_inference/models/vlm_model_adapter.py)) — a wrapper that makes the HuggingFace VLM look and behave like a `HookedTransformer`. It owns the processor (chat-template tokenization + image patch encoding), holds the current image so it can be threaded into the next forward pass, and registers MLP-in/MLP-out hooks on each transformer layer so SAEs can be attached at the same points used during training.
+- **Custom SAE loader** ([saes/vlm_sae.py](apps/inference/neuronpedia_inference/saes/vlm_sae.py)) — sae-lens cannot load our `.pt` checkpoints, so this thin wrapper loads our trained `SparseAutoencoder` and exposes it through the interface the rest of Neuronpedia expects.
+- **SAE manager** ([sae_manager.py](apps/inference/neuronpedia_inference/sae_manager.py)) — extended to read a `VLM_SAE_PATHS` JSON env var, attach each SAE to the correct hook, and skip the usual auto-load/unload behavior (VLM SAEs stay pinned in memory).
+- **Bootstrapping** ([args.py](apps/inference/neuronpedia_inference/args.py), [config.py](apps/inference/neuronpedia_inference/config.py), [shared.py](apps/inference/neuronpedia_inference/shared.py), [server.py](apps/inference/neuronpedia_inference/server.py)) — a `VLM=true` switch routes startup down the new path: load Gemma-3 + processor, wrap in the adapter, skip sae-lens directory lookups.
+- **Activation endpoints** ([endpoints/activation/](apps/inference/neuronpedia_inference/endpoints/activation/)) — every endpoint that previously took text now also accepts an optional image (`image_base64`). Before each forward pass the image is set on the adapter so it gets fused into the input. `activation/all.py` also zeros out activations on chat-template control tokens (`<bos>`, `<start_of_turn>`, `<end_of_turn>`, etc.) — those tokens otherwise dominate feature rankings because the SAE was never trained to make sense of them — and supports a top-K-per-token filter for cleaner search results.
+
+## Graph server — [apps/graph/](apps/graph/)
+
+The graph server runs [circuit-tracer](https://github.com/safety-research/circuit-tracer) to build attribution graphs. Out of the box it loads the model onto a single GPU at full precision — fine for small text models, not workable for a 4B-parameter VLM with multiple transcoder SAEs alongside it.
+
+- **Runtime patches to ReplacementModel** ([neuronpedia_graph/server.py](apps/graph/neuronpedia_graph/server.py)) — at startup we monkey-patch circuit-tracer's `ReplacementModel` to honor two new env vars: `GRAPH_DEVICE_MAP` (HuggingFace `accelerate`-style placement, e.g. spreading layers across GPUs) and `GRAPH_MAX_MEMORY` (per-GPU memory caps). This lets a single host run the VLM + transcoders for attribution without OOMing.
+- The graph server itself didn't need explicit image-aware code — circuit-tracer talks to whichever model object we hand it, and the patched device-map logic is enough to make the VLM load and run.
+
+## API client packages — [packages/](packages/)
+
+The Python and TypeScript clients are generated from the inference server's OpenAPI schema, so adding image support meant extending the wire format end-to-end.
+
+- **Python client** ([packages/python/neuronpedia-inference-client/](packages/python/neuronpedia-inference-client/)) — added `image_base64` and `top_k` fields to every activation request model.
+- **TypeScript client** ([packages/typescript/neuronpedia-inference-client/](packages/typescript/neuronpedia-inference-client/)) — same fields exposed as `imageBase64` and `activationThreshold` in camelCase, serialized to snake_case on the wire.
+
+## Webapp — [apps/webapp/](apps/webapp/)
+
+The frontend changes were almost entirely additive — adapt the existing forms and graph views to handle images and the new token types Gemma-3 introduces, without forking the UI for VLMs.
+
+- **Database seeding** ([prisma/seed-vlm.ts](apps/webapp/prisma/seed-vlm.ts), [prisma/cleanup-vlm.ts](apps/webapp/prisma/cleanup-vlm.ts)) — registers the Gemma-3 model, the VLM source sets (SAE and transcoder), and one source per layer in the local Postgres so the model and its features show up in the model picker.
+- **VLM detection** ([components/inference-searcher/](apps/webapp/components/inference-searcher/), [components/activation-single-form.tsx](apps/webapp/components/activation-single-form.tsx)) — a small `VLM_MODELS_PREFIX = ['gemma-3-']` check decides whether to show the image-upload affordances. No new pages or modals; just extra controls inside the existing ones.
+- **Image upload + threshold controls** — file → base64 client-side, optional "activation threshold" and "top-K" inputs so users can tame the dense activation maps that VLMs produce.
+- **Token display** — the 256 `<image_soft_token>` patches that Gemma-3 inserts for every image would otherwise drown every token chip and graph node. They're collapsed to readable `Image_patch_N` labels in the activation views ([inference-searcher](apps/webapp/components/inference-searcher/)) and to grouped chips in the graph toolbar / info modal / generate modal ([app/[modelId]/graph/](apps/webapp/app/[modelId]/graph/)).
+- **Patch-aware graph rendering** ([app/[modelId]/graph/image-patch-strip.tsx](apps/webapp/app/[modelId]/graph/image-patch-strip.tsx), [link-graph.tsx](apps/webapp/app/[modelId]/graph/link-graph.tsx), [wrapper.tsx](apps/webapp/app/[modelId]/graph/wrapper.tsx)) — when a graph was generated from an image, the page renders the original image plus a strip of the 16×16 patch tiles, and the graph nodes for each patch position show the actual cropped image instead of an `<image_soft_token>` chip.
+- **Request plumbing** ([lib/utils/inference.ts](apps/webapp/lib/utils/inference.ts), [lib/utils/graph.ts](apps/webapp/lib/utils/graph.ts), [app/api/search-all/](apps/webapp/app/api/search-all/), [app/api/activation/new/](apps/webapp/app/api/activation/new/)) — propagates `imageBase64` / `topK` from the UI through the webapp's API routes to the inference server. Image-only searches (no text) are now allowed, and the URL cache is skipped for image queries since the image won't fit in a query string. `GRAPH_BATCH_SIZE` was reduced (48 → 8) so circuit-tracer fits on a 24 GB GPU when the transcoders are loaded alongside the VLM.
+
+## Docker / environment — [docker/](docker/)
+
+- **VLM compose overlay** ([docker/compose.inference.vlm.yaml](docker/compose.inference.vlm.yaml)) — mounts the SAE weights directory and the upstream training repo into the inference container, reinstalls PyTorch with CUDA 12.4 wheels to match our host driver, and pins the container to a single GPU (the host GPU is selected via `CUDA_DEVICE` in the env file; inside the container it's always `cuda:0`).
+- **Example env file** ([.env.inference.gemma-3-vlm.layer10](.env.inference.gemma-3-vlm.layer10)) — shows how to set `VLM=true`, the per-layer `VLM_SAE_PATHS`, and the GPU pinning vars.
 
 ## Adding a new SAE or transcoder checkpoint
 
-1. Place the `.pt` checkpoint file in the directory mounted at `/sae_weights`
+1. Place the `.pt` checkpoint file in the directory mounted at `/sae_weights`.
 2. Add an entry to `VLM_SAE_PATHS` in your `.env` file:
    ```
    "15-vlm-sae": "/sae_weights/layer15.pt"
    ```
-3. Add the layer to `SOURCES` in `apps/webapp/prisma/seed-vlm.ts`, then run:
+3. Add the layer to `SOURCES` in [apps/webapp/prisma/seed-vlm.ts](apps/webapp/prisma/seed-vlm.ts), then run:
    ```bash
    cd apps/webapp && npx tsx prisma/seed-vlm.ts
    ```
-4. Restart the inference server — look for `Loaded VLM SAE: hook=language_model.model.layers.15.hook_mlp_out` in the logs
+4. Restart the inference server — look for `Loaded VLM SAE: hook=language_model.model.layers.15.hook_mlp_out` in the logs.
 
 For **transcoder** checkpoints, set `is_transcoder=True` in the SAE config and use `hook_mlp_in` as the hook point. The source ID convention is `"{layer}-vlm-transcoder"`.
 
-See [VLM_INTEGRATION_REPORT.md](VLM_INTEGRATION_REPORT.md) for full technical details.
+See [VLM_INTEGRATION_REPORT.md](VLM_INTEGRATION_REPORT.md) for the full technical writeup — adapter internals, hook conventions, token-zeroing rationale, and debugging notes.
 
 ## TODOs
 

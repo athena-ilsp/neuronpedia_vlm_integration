@@ -106,8 +106,8 @@ class VLMModelAdapter:
             bos = self.tokenizer.bos_token or ""
             raw_text = text[len(bos):] if text.startswith(bos) else text
             messages = [{"role": "user", "content": [
-                {"type": "text", "text": raw_text},
                 {"type": "image", "image": self._pil_image},
+                {"type": "text", "text": raw_text},
             ]}]
             chat_text = self.processor.apply_chat_template(
                 messages, add_generation_prompt=False, tokenize=False

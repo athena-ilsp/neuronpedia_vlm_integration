@@ -1,5 +1,4 @@
 import { prisma } from '@/lib/db';
-import { RequestAuthedUser, withAuthedUser } from '@/lib/with-user';
 import { DeleteObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { NextResponse } from 'next/server';
 import { object, string, ValidationError } from 'yup';
@@ -49,7 +48,7 @@ const s3Client = new S3Client({ region: 'us-east-1' });
  *                   type: string
  */
 
-export const POST = withAuthedUser(async (request: RequestAuthedUser) => {
+export async function POST(request: Request) {
   const bodyJson = await request.json();
 
   try {
@@ -69,32 +68,37 @@ export const POST = withAuthedUser(async (request: RequestAuthedUser) => {
       return NextResponse.json({ message: 'Graph not found' }, { status: 404 });
     }
 
-    // Check if the user is the owner of the graph
-    if (graphMetadata.userId !== request.user.id) {
-      return NextResponse.json({ message: 'Unauthorized to delete this graph' }, { status: 403 });
+    // Parse the URL to get the S3 bucket and key.
+    // Supports both AWS S3 (https://bucket.s3.amazonaws.com/key) and
+    // path-style endpoints like MinIO (http://host:port/bucket/key).
+    const { url } = graphMetadata;
+    let bucket: string | undefined;
+    let s3Key = '';
+
+    const awsMatch = url.match(/^https?:\/\/([^.]+)\.s3[^/]*\.amazonaws\.com\/(.+)$/);
+    if (awsMatch) {
+      [, bucket, s3Key] = awsMatch;
+    } else {
+      const pathStyleMatch = url.match(/^https?:\/\/[^/]+\/([^/]+)\/(.+)$/);
+      if (pathStyleMatch) {
+        [, bucket, s3Key] = pathStyleMatch;
+      }
     }
 
-    // Parse the URL to get the S3 key
-    const { url } = graphMetadata;
-    const s3KeyMatch = url.match(/amazonaws\.com\/(.+)$/);
-    const s3Key = s3KeyMatch ? s3KeyMatch[1] : '';
+    console.log('bucket', bucket, 's3 object to delete', s3Key);
 
-    console.log('s3 object to delete', s3Key);
-
-    const bucket = url.match(/https:\/\/([^.]+)/)?.[1];
-    console.log('bucket ', bucket);
-
-    const deleteCommand = new DeleteObjectCommand({
-      Bucket: bucket,
-      Key: s3Key,
-    });
-
-    const response = await s3Client.send(deleteCommand);
-    // S3 returns 204 No Content on successful deletion
-    if (response.$metadata.httpStatusCode === 204) {
-      console.log('S3 object deleted successfully');
-    } else {
-      throw new Error(`S3 object deletion failed: ${response.$metadata.httpStatusCode}`);
+    if (bucket && s3Key) {
+      try {
+        const deleteCommand = new DeleteObjectCommand({ Bucket: bucket, Key: s3Key });
+        const response = await s3Client.send(deleteCommand);
+        if (response.$metadata.httpStatusCode === 204) {
+          console.log('S3 object deleted successfully');
+        } else {
+          console.warn(`S3 object deletion returned ${response.$metadata.httpStatusCode}; continuing with metadata delete`);
+        }
+      } catch (s3Error) {
+        console.warn('S3 object deletion failed; continuing with metadata delete:', s3Error);
+      }
     }
 
     await prisma.graphMetadata.delete({
@@ -116,4 +120,4 @@ export const POST = withAuthedUser(async (request: RequestAuthedUser) => {
     console.error('Error deleting graph:', error);
     return NextResponse.json({ message: 'Unknown Error' }, { status: 500 });
   }
-});
+}

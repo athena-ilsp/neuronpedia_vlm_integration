@@ -1,5 +1,4 @@
 import { prisma } from '@/lib/db';
-import { RequestAuthedUser, withAuthedUser } from '@/lib/with-user';
 import { NextResponse } from 'next/server';
 
 /**
@@ -17,14 +16,9 @@ import { NextResponse } from 'next/server';
  *         description: Successfully retrieved graph list
  */
 
-export const POST = withAuthedUser(async (request: RequestAuthedUser) => {
+export async function POST() {
   try {
-    const userId = request.user.id;
-
     const graphMetadatas = await prisma.graphMetadata.findMany({
-      where: {
-        userId,
-      },
       orderBy: {
         updatedAt: 'desc',
       },
@@ -35,4 +29,4 @@ export const POST = withAuthedUser(async (request: RequestAuthedUser) => {
     console.error('Error fetching graph list:', error);
     return NextResponse.json({ error: 'Failed to fetch graph list' }, { status: 500 });
   }
-});
+}

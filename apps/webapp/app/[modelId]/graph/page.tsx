@@ -1,4 +1,3 @@
-import { authOptions } from '@/app/api/auth/[...nextauth]/authOptions';
 import { GraphProvider } from '@/components/provider/graph-provider';
 import { GraphStateProvider } from '@/components/provider/graph-state-provider';
 import { prisma } from '@/lib/db';
@@ -6,7 +5,6 @@ import { getModelById } from '@/lib/db/model';
 import { ASSET_BASE_URL } from '@/lib/env';
 import { ModelWithPartialRelations } from '@/prisma/generated/zod';
 import { Metadata } from 'next';
-import { getServerSession } from 'next-auth/next';
 import { notFound } from 'next/navigation';
 import { ModelToGraphMetadatasMap } from './graph-types';
 import {
@@ -134,8 +132,6 @@ export default async function Page({
   };
 }) {
   const { modelId } = params;
-  const session = await getServerSession(authOptions);
-
   const embedParam = searchParams.embed as string | undefined;
   const embed = embedParam === 'true';
 
@@ -177,8 +173,7 @@ export default async function Page({
     searchParams.sourceSet || (ANTHROPIC_MODELS.has(modelId) ? modelId : model?.defaultGraphSourceSetName || '');
 
   // always get the user's graphMetadatas from our database
-  const graphMetadatas =
-    session && session.user && session.user.id ? await getGraphMetadataWithUser({ userId: session.user.id }) : [];
+  const graphMetadatas = await getGraphMetadataWithUser({});
 
   // add those graphmetadatas to the modelIdToGraphMetadatasMap too
   graphMetadatas.forEach((graphMetadata) => {
