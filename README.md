@@ -92,23 +92,6 @@ Frontend changes are additive: existing forms and graph views were adapted to ha
 - **VLM compose overlay** ([docker/compose.inference.vlm.yaml](docker/compose.inference.vlm.yaml)) — mounts the SAE weights directory and the upstream training repo into the inference container, reinstalls PyTorch with CUDA 12.4 wheels to match the host driver, and pins the container to a single GPU (the host GPU is selected via `CUDA_DEVICE` in the env file; inside the container it is always `cuda:0`).
 - **Example env file** ([.env.inference.gemma-3-vlm.layer10](.env.inference.gemma-3-vlm.layer10)) — illustrates how to set `VLM=true`, the per-layer `VLM_SAE_PATHS`, and the GPU pinning variables.
 
-## Adding a new SAE or transcoder checkpoint
-
-1. Place the `.pt` checkpoint file in the directory mounted at `/sae_weights`.
-2. Add an entry to `VLM_SAE_PATHS` in your `.env` file:
-   ```
-   "15-vlm-sae": "/sae_weights/layer15.pt"
-   ```
-3. Add the layer to `SOURCES` in [apps/webapp/prisma/seed-vlm.ts](apps/webapp/prisma/seed-vlm.ts), then run:
-   ```bash
-   cd apps/webapp && npx tsx prisma/seed-vlm.ts
-   ```
-4. Restart the inference server — look for `Loaded VLM SAE: hook=language_model.model.layers.15.hook_mlp_out` in the logs.
-
-For **transcoder** checkpoints, set `is_transcoder=True` in the SAE config and use `hook_mlp_in` as the hook point. The source ID convention is `"{layer}-vlm-transcoder"`.
-
-See [VLM_INTEGRATION_REPORT.md](VLM_INTEGRATION_REPORT.md) for the full technical writeup — adapter internals, hook conventions, token-zeroing rationale, and debugging notes.
-
 ## TODOs
 
 - [ ] **Integrate with delphi autointerp** — pipe VLM SAE feature activations through EleutherAI's [delphi](https://github.com/EleutherAI/delphi) to automatically generate and score natural-language explanations for VLM features, including multimodal ones.
