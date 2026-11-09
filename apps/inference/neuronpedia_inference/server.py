@@ -910,7 +910,15 @@ async def initialize(
         # Before anything reaches the GPU: args.device is still the *requested* device
         # here (select_backend resolves it below), which is what decides whether a
         # too-old driver is fatal or merely worth a warning.
-        check_cuda_driver(args.device, cpu_hint="To serve on CPU instead, pass --device cpu.")
+        #
+        # ALLOW_CUDA_MINOR_MISMATCH=1 skips the check for hosts whose driver is one CUDA *minor*
+        # behind the torch build (e.g. driver 12.4 with a cu126 torch on consumer GPUs that cannot
+        # use the forward-compat driver). CUDA minor-version compatibility covers that case for
+        # the eager backend; vLLM's own wheels still need their CUDA major, so this is eager-only.
+        if os.getenv("ALLOW_CUDA_MINOR_MISMATCH", "").strip().lower() in {"1", "true", "yes"}:
+            logger.warning("ALLOW_CUDA_MINOR_MISMATCH set: skipping the CUDA driver preflight check")
+        else:
+            check_cuda_driver(args.device, cpu_hint="To serve on CPU instead, pass --device cpu.")
 
         # The model_id / SAE-set values are not validated against the SAELens directory
         # (get_saelens_neuronpedia_directory_df): sets served here can be local or not yet
