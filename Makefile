@@ -137,6 +137,20 @@ host-remove: ## Hosts: deregister a GPU server. Required: SERVICE, URL
 	fi
 	@$(HOST_CLI) remove --service $(SERVICE) --url $(URL)
 
+SOURCE_SET_CLI = cd apps/webapp && npx --no-install env-cmd -f .env.localhost --use-shell \
+	'ts-node --compiler-options {\"module\":\"CommonJS\"} scripts/source-set.ts'
+
+source-set-add: ## Sources: register a model's source set not in the admin import (e.g. neurons, your own SAEs). Required: MODEL, SET, LAYERS. Optional: MODEL_LAYERS, DESCRIPTION, INSTRUCT=1
+	@if [ -z "$(MODEL)" ] || [ -z "$(SET)" ] || [ -z "$(LAYERS)" ]; then \
+		echo "Error: MODEL, SET and LAYERS are all required."; \
+		echo "  e.g. make source-set-add MODEL=gemma-3-4b-it SET=neurons LAYERS=0-33 MODEL_LAYERS=34 INSTRUCT=1"; \
+		exit 1; \
+	fi
+	@$(SOURCE_SET_CLI) add --model $(MODEL) --set $(SET) --layers $(LAYERS) \
+		$(if $(MODEL_LAYERS),--model-layers $(MODEL_LAYERS),) \
+		$(if $(DESCRIPTION),--description "$(DESCRIPTION)",) \
+		$(if $(INSTRUCT),--instruct,)
+
 db-reset: ## Database: DROP the schema and rebuild it - this deletes your local data!
 	@echo "WARNING: This will delete all data in your local Neuronpedia database!"
 	@read -p "Are you sure you want to continue? (y/N) " confirm; \
