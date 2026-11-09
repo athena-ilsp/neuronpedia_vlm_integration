@@ -21,13 +21,12 @@ from neuronpedia_inference.inference_utils.neuron_act_range import (
     neuron_rarity,
 )
 from neuronpedia_inference.memory_cost import activation_all_cost
-from neuronpedia_inference.multimodal import ImagePrompt, MultimodalInputError, build_image_prompt
+from neuronpedia_inference.multimodal import ImagePrompt, MultimodalInputError, activation_image, prepare_prompt
 from neuronpedia_inference.sae_manager import SAEManager
 from neuronpedia_inference.schemas import (
     ActivationAllFeature,
     ActivationAllRequest,
     ActivationAllResponse,
-    ActivationImage,
 )
 from neuronpedia_inference.shared import (
     LoadedModel,
@@ -184,19 +183,10 @@ class ActivationProcessor:
         # The schema's optional `counts` (a [layer, token] histogram) is intentionally left
         # unset: no client reads it, and filling it costs a full pass over every source's
         # [d_sae, n_tokens] block plus a layers x tokens array in the payload.
-        image = self._image_prompt
         return ActivationAllResponse(
             activations=feature_activations,
             tokens=str_tokens,
-            image=None
-            if image is None
-            else ActivationImage(
-                image_token=image.image_token,
-                token_positions=image.image_token_positions,
-                grid_rows=image.grid_rows,
-                grid_cols=image.grid_cols,
-                template_token_positions=image.template_positions(),
-            ),
+            image=None if self._image_prompt is None else activation_image(self._image_prompt),
         )
 
     async def _tokenize_and_get_cache(
@@ -210,21 +200,11 @@ class ActivationProcessor:
         config = Config.get_instance()
         sae_manager = SAEManager.get_instance()
 
-        forward_kwargs: dict[str, torch.Tensor] | None = None
-        if request.image_base64 is not None:
-            self._image_prompt = build_image_prompt(model, text, request.image_base64)
-            tokens = self._image_prompt.tokens
-            str_tokens = self._image_prompt.str_tokens
-            forward_kwargs = self._image_prompt.forward_kwargs
-            if request.ignore_chat_template_tokens:
-                self._masked_positions = self._image_prompt.template_positions()
-        else:
-            tokens = model.to_tokens(
-                text,
-                prepend_bos=prepend_bos,
-                truncate=False,
-            )[0]
-            str_tokens = model.to_str_tokens(text, prepend_bos=prepend_bos)
+        prompt = prepare_prompt(model, text, request.image_base64, prepend_bos=prepend_bos)
+        tokens, str_tokens = prompt.tokens, prompt.str_tokens
+        self._image_prompt = prompt.image
+        if prompt.image is not None and request.ignore_chat_template_tokens:
+            self._masked_positions = prompt.image.template_positions()
         if len(tokens) > config.activation_token_limit:
             raise ValueError(f"Text too long: {len(tokens)} tokens, max is {config.activation_token_limit}")
 
@@ -238,7 +218,7 @@ class ActivationProcessor:
 
         # Capture only the hook points the selected sources need (backend-aware).
         hook_names = list(dict.fromkeys(sae_manager.get_sae_hook(s) for s in request.selected_sources))
-        cache = await capture_cache_async(model, tokens, hook_names, forward_kwargs)
+        cache = await capture_cache_async(model, tokens, hook_names, prompt.forward_kwargs)
         return tokens, str_tokens, cache
 
     def _stream_top_activations(

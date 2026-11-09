@@ -39,6 +39,31 @@ class ActivationValues(BaseSchema):
     dfa_target_index: StrictInt | None = None
 
 
+IMAGE_BASE64_DESCRIPTION = (
+    "Optional. A base64 image (a bare string or a data URL) for a vision-language model. With an image, "
+    "the prompt becomes one chat user turn, image first, rendered by the model's own chat template; "
+    "text-only requests keep the raw prompt. Needs the eager backend."
+)
+
+
+class ActivationImage(BaseSchema):
+    """Where an input image landed in the tokenized prompt."""
+
+    image_token: StrictStr = Field(description="The placeholder token every image position carries.")
+    token_positions: list[StrictInt] = Field(description="Indices into `tokens` of the image positions, in order.")
+    grid_rows: StrictInt | None = Field(
+        default=None, description="Rows of the patch grid the image positions tile (row-major), when known."
+    )
+    grid_cols: StrictInt | None = Field(
+        default=None, description="Columns of the patch grid the image positions tile (row-major), when known."
+    )
+    template_token_positions: list[StrictInt] = Field(
+        default_factory=list,
+        description="Indices into `tokens` the chat template added (BOS, turn markers, role names, image "
+        "delimiters): neither image nor user text. Empty if the text could not be located in the template.",
+    )
+
+
 class ActivationSingleRequest(BaseSchema):
     """
     Get activations for either a specific feature in an SAE (specified by \"source\" + \"index\") or a custom vector (specified by \"vector\" + \"hook\")
@@ -59,6 +84,10 @@ class ActivationSingleRequest(BaseSchema):
     hook: StrictStr | None = Field(
         default=None, description='Hook that the custom vector applies to. Must be specified with "vector".'
     )
+    image_base64: StrictStr | None = Field(
+        default=None,
+        description=IMAGE_BASE64_DESCRIPTION + ' Only with "source" + "index"; a custom vector takes no image yet.',
+    )
 
 
 class ActivationSingleResponse(BaseSchema):
@@ -70,6 +99,9 @@ class ActivationSingleResponse(BaseSchema):
     tokens: list[StrictStr]
     tokens_is_special: list[StrictBool] = Field(
         description="Index-aligned with \"tokens\". True where the token is one of the tokenizer's special tokens (BOS, EOS, padding, chat turn markers, and so on) rather than content. Lets a client filter scaffolding without knowing any model family's token literals."
+    )
+    image: ActivationImage | None = Field(
+        default=None, description="Present when the request carried an image: where its tokens are."
     )
 
 
@@ -128,31 +160,6 @@ class ActivationAllFeature(BaseSchema):
     dfa_target_index: StrictInt | None = None
     dfa_max_value: StrictFloat | None = None
     ranked_by_lowest: StrictBool | None = Field(default=None, description=RANKED_BY_LOWEST_DESCRIPTION)
-
-
-IMAGE_BASE64_DESCRIPTION = (
-    "Optional. A base64 image (a bare string or a data URL) for a vision-language model. With an image, "
-    "the prompt becomes one chat user turn, image first, rendered by the model's own chat template; "
-    "text-only requests keep the raw prompt. Needs the eager backend."
-)
-
-
-class ActivationImage(BaseSchema):
-    """Where an input image landed in the tokenized prompt."""
-
-    image_token: StrictStr = Field(description="The placeholder token every image position carries.")
-    token_positions: list[StrictInt] = Field(description="Indices into `tokens` of the image positions, in order.")
-    grid_rows: StrictInt | None = Field(
-        default=None, description="Rows of the patch grid the image positions tile (row-major), when known."
-    )
-    grid_cols: StrictInt | None = Field(
-        default=None, description="Columns of the patch grid the image positions tile (row-major), when known."
-    )
-    template_token_positions: list[StrictInt] = Field(
-        default_factory=list,
-        description="Indices into `tokens` the chat template added (BOS, turn markers, role names, image "
-        "delimiters): neither image nor user text. Empty if the text could not be located in the template.",
-    )
 
 
 class ActivationAllRequest(BaseSchema):

@@ -792,6 +792,18 @@
             "description": "Hook that the custom vector applies to. Must be specified with \"vector\".",
             "title": "Hook"
           },
+          "imageBase64": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional. A base64 image (a bare string or a data URL) for a vision-language model. With an image, the prompt becomes one chat user turn, image first, rendered by the model's own chat template; text-only requests keep the raw prompt. Needs the eager backend. Only with \"source\" + \"index\"; a custom vector takes no image yet.",
+            "title": "Imagebase64"
+          },
           "index": {
             "anyOf": [
               {
@@ -854,6 +866,17 @@
         "properties": {
           "activation": {
             "$ref": "#/components/schemas/ActivationValues"
+          },
+          "image": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActivationImage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present when the request carried an image: where its tokens are."
           },
           "tokens": {
             "items": {

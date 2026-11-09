@@ -269,6 +269,11 @@ def test_an_image_request_is_costed_at_the_token_limit():
     assert with_image == longest_text
     assert with_image > short_text
 
+    source = NARROW_SOURCES[0]
+    single_with_image = activation_single_cost(SimpleNamespace(source=source, prompt="hi", image_base64="aGk="))
+    single_longest = activation_single_cost(SimpleNamespace(source=source, prompt="x" * 100_000))
+    assert single_with_image == single_longest
+
 
 def test_an_unknown_source_falls_back_to_something_expensive():
     """An unrecorded source (a `neurons` source) must not be costed as free."""

@@ -768,6 +768,11 @@ export interface components {
        */
       hook?: string | null;
       /**
+       * Imagebase64
+       * @description Optional. A base64 image (a bare string or a data URL) for a vision-language model. With an image, the prompt becomes one chat user turn, image first, rendered by the model's own chat template; text-only requests keep the raw prompt. Needs the eager backend. Only with "source" + "index"; a custom vector takes no image yet.
+       */
+      imageBase64?: string | null;
+      /**
        * Index
        * @description Index of the SAE. Must be specified with "source", or not at all.
        */
@@ -799,6 +804,8 @@ export interface components {
      */
     ActivationSingleResponse: {
       activation: components['schemas']['ActivationValues'];
+      /** @description Present when the request carried an image: where its tokens are. */
+      image?: components['schemas']['ActivationImage'] | null;
       /** Tokens */
       tokens: string[];
       /**

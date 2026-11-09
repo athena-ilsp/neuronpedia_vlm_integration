@@ -114,6 +114,18 @@ def test_unlocated_text_masks_nothing_rather_than_the_users_own_tokens():
     assert prompt.template_positions() == []
 
 
+def test_activation_image_reindexes_for_a_response_that_dropped_the_bos():
+    prompt = _image_prompt(12, image=[5, 6], text=[9, 10])
+    full = multimodal.activation_image(prompt)
+    assert full.token_positions == [5, 6]
+    assert full.template_token_positions == [0, 1, 2, 3, 4, 7, 8, 11]
+
+    shifted = multimodal.activation_image(prompt, dropped_leading=1)
+    assert shifted.token_positions == [4, 5]
+    # The dropped BOS (position 0) is gone rather than turned into -1.
+    assert shifted.template_token_positions == [0, 1, 2, 3, 6, 7, 10]
+
+
 def test_build_image_prompt_refuses_off_the_eager_backend_before_decoding():
     with pytest.raises(BackendUnsupported, match="eager backend.*vllm"):
         build_image_prompt(cast(InterpModel, _NotEager()), "hi", "not even an image")

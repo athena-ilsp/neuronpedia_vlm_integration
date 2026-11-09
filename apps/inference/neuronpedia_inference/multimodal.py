@@ -35,6 +35,7 @@ from PIL import Image, UnidentifiedImageError
 from transformers import AutoProcessor
 
 from neuronpedia_inference.engine_adapter import BackendUnsupported, backend_name
+from neuronpedia_inference.schemas import ActivationImage
 
 logger = logging.getLogger(__name__)
 
@@ -199,4 +200,51 @@ def build_image_prompt(model: InterpModel, text: str, image_base64: str) -> Imag
         grid_cols=cols,
         text_token_positions=text_positions,
         has_unlocated_text=bool(text_ids) and not text_positions,
+    )
+
+
+@dataclass(frozen=True)
+class PreparedPrompt:
+    """A tokenized prompt, text-only or with an image, in the shape every activation endpoint uses."""
+
+    tokens: torch.Tensor
+    str_tokens: list[str]
+    #: Set when the prompt carries an image.
+    image: ImagePrompt | None = None
+
+    @property
+    def forward_kwargs(self) -> dict[str, torch.Tensor] | None:
+        """The image's extra forward inputs for ``capture_cache_async``; None for text."""
+        return None if self.image is None else self.image.forward_kwargs
+
+
+def prepare_prompt(model: InterpModel, text: str, image_base64: str | None, *, prepend_bos: bool) -> PreparedPrompt:
+    """Tokenize ``text`` the way the endpoints always have, or with ``image_base64`` via the processor.
+
+    Text-only keeps each endpoint's own BOS convention (``prepend_bos``, and any BOS the caller
+    already put in ``text``); an image prompt is chat-formatted, which carries its own BOS.
+    """
+    if image_base64 is not None:
+        image = build_image_prompt(model, text, image_base64)
+        return PreparedPrompt(tokens=image.tokens, str_tokens=image.str_tokens, image=image)
+    tokens = model.to_tokens(text, prepend_bos=prepend_bos, truncate=False)[0]
+    return PreparedPrompt(tokens=tokens, str_tokens=model.to_str_tokens(text, prepend_bos=prepend_bos))
+
+
+def activation_image(image: ImagePrompt, dropped_leading: int = 0) -> ActivationImage:
+    """The response's ``image`` block, positions re-indexed for a response that dropped leading tokens.
+
+    Endpoints that strip the BOS from ``tokens`` (``/activation/single``) pass ``dropped_leading=1``
+    so every position still indexes the ``tokens`` they return.
+    """
+
+    def shift(positions: list[int]) -> list[int]:
+        return [p - dropped_leading for p in positions if p >= dropped_leading]
+
+    return ActivationImage(
+        image_token=image.image_token,
+        token_positions=shift(image.image_token_positions),
+        grid_rows=image.grid_rows,
+        grid_cols=image.grid_cols,
+        template_token_positions=shift(image.template_positions()),
     )

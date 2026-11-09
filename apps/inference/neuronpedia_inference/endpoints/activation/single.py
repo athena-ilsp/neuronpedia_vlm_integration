@@ -15,6 +15,7 @@ from neuronpedia_inference.engine_adapter import (
 )
 from neuronpedia_inference.inference_utils.token_limit import reject_if_over_token_limit
 from neuronpedia_inference.memory_cost import activation_single_cost
+from neuronpedia_inference.multimodal import MultimodalInputError, PreparedPrompt, activation_image, prepare_prompt
 from neuronpedia_inference.sae_manager import SAE_TYPE, SAEManager
 from neuronpedia_inference.schemas import (
     ActivationSingleRequest,
@@ -57,6 +58,12 @@ async def activation_single(
         )
 
     prompt = request.prompt
+    if request.image_base64 is not None and request.source is None:
+        return JSONResponse(
+            content={"error": 'An image is only supported with "source" + "index", not with a custom vector'},
+            status_code=400,
+        )
+    prepared: PreparedPrompt | None = None
 
     if request.source is not None and request.index is not None:
         source = request.source
@@ -70,29 +77,32 @@ async def activation_single(
         # this is not exactly correct, but sometimes the SAE doesn't have the prepend_bos flag set
         # prepend_bos = sae.cfg.metadata.prepend_bos or model.cfg.tokenizer_prepends_bos
         prepend_bos = False
-        # if the prompt doesn't start with the bos, prepend it
+        # if the prompt doesn't start with the bos, prepend it. An image prompt is chat-formatted
+        # by the processor, whose template carries the BOS itself.
         bos_token = model.tokenizer.bos_token
-        if bos_token and not prompt.startswith(bos_token):
+        if request.image_base64 is None and bos_token and not prompt.startswith(bos_token):
             prompt = bos_token + prompt
 
-        tokens = model.to_tokens(
-            prompt,
-            prepend_bos=prepend_bos,
-            truncate=False,
-        )[0]
+        try:
+            prepared = prepare_prompt(model, prompt, request.image_base64, prepend_bos=prepend_bos)
+        except (BackendUnsupported, MultimodalInputError) as e:
+            return JSONResponse(content={"error": str(e)}, status_code=400)
+        tokens = prepared.tokens
 
         too_long = reject_if_over_token_limit(len(tokens), config.activation_token_limit)
         if too_long is not None:
             return too_long
 
-        str_tokens: list[str] = model.to_str_tokens(prompt, prepend_bos=prepend_bos)  # type: ignore
+        str_tokens: list[str] = prepared.str_tokens
         try:
-            result = await process_activations(model, source, index, tokens)
+            result = await process_activations(model, source, index, tokens, prepared.forward_kwargs)
 
             # Calculate DFA if enabled. `n_values` because `process_activations` may have
             # dropped the leading BOS from `values`, which shifts `max_value_index` off the
             # attention pattern's own indexing (see `calculate_dfa_for_values`).
             if sae_manager.is_dfa_enabled(source):
+                if prepared.image is not None:
+                    raise BackendUnsupported("DFA is not available for image prompts yet.")
                 dfa_result = await calculate_dfa_for_values(
                     model,
                     sae,
@@ -139,11 +149,16 @@ async def activation_single(
     tokens_is_special = [i in special_positions for i in range(len(str_tokens))]
 
     # if the model prepends the BOS token, then we need to remove the first token from the str_tokens
+    dropped_leading = 0
     if len(str_tokens) > len(result.values):
         str_tokens = str_tokens[1:]
         tokens_is_special = tokens_is_special[1:]
+        dropped_leading = 1
 
-    return ActivationSingleResponse(activation=result, tokens=str_tokens, tokens_is_special=tokens_is_special)
+    image = None if prepared is None or prepared.image is None else activation_image(prepared.image, dropped_leading)
+    return ActivationSingleResponse(
+        activation=result, tokens=str_tokens, tokens_is_special=tokens_is_special, image=image
+    )
 
 
 def _get_safe_dtype(dtype: torch.dtype) -> torch.dtype:
@@ -162,6 +177,7 @@ async def process_activations(
     layer: str,
     index: int,
     tokens: torch.Tensor,
+    forward_kwargs: dict[str, torch.Tensor] | None = None,
 ) -> ActivationValues:
     sae_manager = SAEManager.get_instance()
     hook_name = sae_manager.get_sae_hook(layer)
@@ -170,7 +186,7 @@ async def process_activations(
     # zero out all values that are the BOS token
     bos_indices = bos_positions(tokens, model.tokenizer.bos_token_id)
 
-    cache = await capture_cache_async(model, tokens, [hook_name])
+    cache = await capture_cache_async(model, tokens, [hook_name], forward_kwargs)
     if sae_type == "neurons":
         return process_neuron_activations(cache, hook_name, index, sae_manager.device, bos_indices)
     return process_feature_activations(sae_manager.get_sae(layer), sae_type, cache, hook_name, index, bos_indices)

@@ -310,7 +310,7 @@ def activation_single_cost(request) -> int:  # type: ignore[no-untyped-def]
     """
     source = getattr(request, "source", None)
     sources = [source] if source else []
-    n_tokens = estimate_tokens(getattr(request, "prompt", None))
+    n_tokens = estimate_request_tokens(request)
     d_sae, _ = _widest_source_dims(sources)
     return int(
         _OVERHEAD_FACTOR
