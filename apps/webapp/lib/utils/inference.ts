@@ -619,6 +619,38 @@ export const runInferenceActivationSource = async (
   });
 };
 
+/**
+ * An image for a vision-language model, sent with a prompt to the activation endpoints.
+ *
+ * With an image the inference server chat-formats the prompt itself (image first, then the text),
+ * so `ignoreChatTemplateTokens` can rank features on the user's image and text alone.
+ */
+export type InferenceImageInput = {
+  imageBase64: string;
+  ignoreChatTemplateTokens?: boolean;
+};
+
+/**
+ * Whether the inference host serving `modelId` takes image prompts, as its `/capabilities` reports
+ * (the eager backend on a checkpoint with a vision tower). False when no host is registered or it
+ * cannot be reached, so callers can use it directly to show or hide image controls.
+ */
+export const getInferenceImageInputSupported = async (
+  modelId: string,
+  user: AuthenticatedUser | null,
+): Promise<boolean> => {
+  try {
+    const serverHost = await resolveHost(inferenceTarget(modelId, { user }));
+    const { data } = await makeInferenceServerApiWithServerHost(serverHost).GET('/v1/capabilities');
+    return (data as { image_input?: unknown } | undefined)?.image_input === true;
+  } catch (error) {
+    if (!(error instanceof NoComputeHostError)) {
+      console.error('could not read inference capabilities', error);
+    }
+    return false;
+  }
+};
+
 export const runInferenceActivationAll = async (
   modelId: string,
   sourceSetName: string,
@@ -630,6 +662,7 @@ export const runInferenceActivationAll = async (
   user: AuthenticatedUser | null,
   // Raw neuron scales differ by orders of magnitude, so rank neurons by how rare each activation is for them
   rankByPercentile = false,
+  image: InferenceImageInput | undefined = undefined,
 ) => {
   // TODO: we don't currently support search-all on different instances
   const serverHost = await resolveHost(inferenceTarget(modelId, { sourceSetName, user }));
@@ -637,6 +670,9 @@ export const runInferenceActivationAll = async (
   const transformerLensModelId = await getTransformerLensModelIdIfExists(modelId);
 
   if (Array.isArray(text)) {
+    if (image) {
+      throw new InferenceServerError(400, 'An image can only be searched with a single prompt, not a batch.');
+    }
     return unwrapInferenceResponse(
       makeInferenceServerApiWithServerHost(serverHost).POST('/v1/activation/all-batch', {
         body: {
@@ -663,6 +699,8 @@ export const runInferenceActivationAll = async (
         ignoreBos,
         numResults,
         rankByPercentile,
+        imageBase64: image?.imageBase64,
+        ignoreChatTemplateTokens: image?.ignoreChatTemplateTokens ?? false,
       },
     }),
   );

@@ -16,7 +16,7 @@ import {
   INFERENCE_ACTIVATION_USER_ID_DO_NOT_INCLUDE_IN_PUBLIC_ACTIVATIONS,
   PUBLIC_ACTIVATIONS_USER_IDS,
 } from '@/lib/env';
-import { runInferenceActivationAll } from '@/lib/utils/inference';
+import { InferenceImageInput, runInferenceActivationAll } from '@/lib/utils/inference';
 import { RequestOptionalUser, withOptionalUser } from '@/lib/with-user';
 import { NextResponse } from 'next/server';
 
@@ -88,6 +88,13 @@ const DEFAULT_DENSITY_THRESHOLD = -1;
  *                 description: The max number of results to return. May return fewer if density threshold is used. Max is 100.
  *                 type: number
  *                 default: 50
+ *               imageBase64:
+ *                 description: Optional. A base64 image (bare or a data URL) for a vision-language model whose inference host takes images. The prompt is then chat-formatted with the image first, `text` may be empty, and only a single prompt is allowed. Image searches are not cached.
+ *                 type: string
+ *               ignoreChatTemplateTokens:
+ *                 description: Optional, with an image. Rank features on the image and text only, ignoring the tokens the chat template added.
+ *                 type: boolean
+ *                 default: false
  *     responses:
  *       200:
  *         description: Successful search with results
@@ -96,6 +103,24 @@ const DEFAULT_DENSITY_THRESHOLD = -1;
  *             schema:
  *               type: object
  *               properties:
+ *                 image:
+ *                   description: Present for an image search. Where the image landed in `tokens`.
+ *                   type: object
+ *                   properties:
+ *                     imageToken:
+ *                       type: string
+ *                     tokenPositions:
+ *                       type: array
+ *                       items:
+ *                         type: number
+ *                     gridRows:
+ *                       type: number
+ *                     gridCols:
+ *                       type: number
+ *                     templateTokenPositions:
+ *                       type: array
+ *                       items:
+ *                         type: number
  *                 tokens:
  *                   type: array
  *                   items:
@@ -130,7 +155,20 @@ const DEFAULT_DENSITY_THRESHOLD = -1;
 
 export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
   const body = await request.json();
-  if (body.text === undefined || body.text === null || body.text === '') {
+  if (body.imageBase64 !== undefined && (typeof body.imageBase64 !== 'string' || body.imageBase64 === '')) {
+    throw badRequest('imageBase64 must be a non-empty base64 string.');
+  }
+  const image: InferenceImageInput | undefined = body.imageBase64
+    ? { imageBase64: body.imageBase64, ignoreChatTemplateTokens: body.ignoreChatTemplateTokens === true }
+    : undefined;
+  if (image && Array.isArray(body.text)) {
+    throw badRequest('An image can only be searched with a single prompt, not a batch.');
+  }
+  // With an image the text is optional: the image alone is a valid prompt.
+  if (image && (body.text === undefined || body.text === null)) {
+    body.text = '';
+  }
+  if (!image && (body.text === undefined || body.text === null || body.text === '')) {
     throw badRequest('Missing search text.');
   }
 
@@ -196,63 +234,65 @@ export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
 
     return NextResponse.json({ results: batchResults });
   }
-  // see if we found this before. The cache key has no ranking method, so percentile searches skip it.
-  const savedSearch = rankByPercentile
-    ? null
-    : await prisma.savedSearch.findUnique({
-        where: {
-          modelId_query: {
-            modelId,
-            query: body.text,
-            selectedLayers,
-            sortByIndexes: sortIndexes,
-            sourceSet: sourceSetName,
-            ignoreBos: body.ignoreBos,
-            numResults,
-            densityThreshold,
-          },
-        },
-        include: {
-          activations: {
-            orderBy: {
-              order: 'asc',
+  // see if we found this before. The cache key has neither the ranking method nor the image, so
+  // percentile searches and image searches skip it.
+  const savedSearch =
+    rankByPercentile || image
+      ? null
+      : await prisma.savedSearch.findUnique({
+          where: {
+            modelId_query: {
+              modelId,
+              query: body.text,
+              selectedLayers,
+              sortByIndexes: sortIndexes,
+              sourceSet: sourceSetName,
+              ignoreBos: body.ignoreBos,
+              numResults,
+              densityThreshold,
             },
-            include: {
-              activation: {
-                include: {
-                  neuron: {
-                    include: {
-                      activations: {
-                        orderBy: {
-                          maxValue: 'desc',
-                        },
-                        take: 1,
-                        where: {
-                          creatorId: {
-                            in: PUBLIC_ACTIVATIONS_USER_IDS,
+          },
+          include: {
+            activations: {
+              orderBy: {
+                order: 'asc',
+              },
+              include: {
+                activation: {
+                  include: {
+                    neuron: {
+                      include: {
+                        activations: {
+                          orderBy: {
+                            maxValue: 'desc',
+                          },
+                          take: 1,
+                          where: {
+                            creatorId: {
+                              in: PUBLIC_ACTIVATIONS_USER_IDS,
+                            },
                           },
                         },
+                        explanations: {
+                          // include: {
+                          //   author: {
+                          //     select: {
+                          //       name: true,
+                          //     },
+                          //   },
+                          //   votes: true,
+                          // },
+                          orderBy: [{ scoreV2: 'desc' }, { scoreV1: 'desc' }],
+                        },
+                        model: true,
                       },
-                      explanations: {
-                        // include: {
-                        //   author: {
-                        //     select: {
-                        //       name: true,
-                        //     },
-                        //   },
-                        //   votes: true,
-                        // },
-                        orderBy: [{ scoreV2: 'desc' }, { scoreV1: 'desc' }],
-                      },
-                      model: true,
                     },
                   },
                 },
               },
             },
           },
-        },
-      });
+        });
 
   let hasMissingNeuron = false;
 
@@ -289,7 +329,10 @@ export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
       body.ignoreBos,
       request.user,
       rankByPercentile,
+      image,
     )) as ActivationAllResponse;
+    // eslint-disable-next-line
+    var imageInfo = result.image ?? undefined;
 
     console.log('got activations: ', result.activations.length);
     console.log('got tokens: ', result.tokens.length);
@@ -361,10 +404,12 @@ export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
 
     result: searchResults,
     sortIndexes,
+    ...(image ? { image: imageInfo } : {}),
   };
 
-  // if not a cached retrieval, make savedsearch
-  if (!savedSearch && !hasMissingNeuron && !rankByPercentile) {
+  // if not a cached retrieval, make savedsearch. An image search is not saved: its tokens are
+  // placeholder tokens that mean nothing without the image, which is not stored.
+  if (!savedSearch && !hasMissingNeuron && !rankByPercentile && !image) {
     // look up the userid to use for creating search
     if (request.user) {
       // eslint-disable-next-line

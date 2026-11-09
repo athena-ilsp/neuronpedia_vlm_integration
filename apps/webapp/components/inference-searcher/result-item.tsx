@@ -1,9 +1,13 @@
 import ActivationItem from '@/components/activation-item';
 import FeatureStats from '@/components/feature-stats';
 import { useGlobalContext } from '@/components/provider/global-provider';
-import { InferenceActivationAllResult } from '@/components/provider/inference-activation-all-provider';
+import {
+  InferenceActivationAllResult,
+  InferenceSearchImage,
+} from '@/components/provider/inference-activation-all-provider';
 import useNeuronDashboard from '@/lib/hooks/use-neuron-dashboard';
 import { replaceHtmlAnomalies } from '@/lib/utils/activations';
+import { collapseImageTokens, IMAGE_TOKEN_LABEL, patchLabel } from '@/lib/utils/image-prompt';
 import { signedLogHistogram } from '@/lib/utils/neuron-dashboard-histogram';
 import {
   applyNeuronDashboard,
@@ -14,6 +18,7 @@ import {
 import { getSourceSetNameFromSource } from '@/lib/utils/source';
 import { ActivationPartialWithRelations, ExplanationPartialWithRelations } from '@/prisma/generated/zod';
 import { useMemo } from 'react';
+import ImagePatchGrid from './image-patch-grid';
 
 function valueColor(value: number) {
   return value < 0 ? 'text-red-700' : 'text-emerald-700';
@@ -74,12 +79,14 @@ export default function ResultItem({
   topExplanation,
   searchSortIndexes,
   showDashboards,
+  searchImage,
 }: {
   result: InferenceActivationAllResult;
   tokens: string[];
   topExplanation: ExplanationPartialWithRelations | undefined;
   searchSortIndexes: number[];
   showDashboards: boolean;
+  searchImage?: InferenceSearchImage;
 }) {
   const { getSourceSet } = useGlobalContext();
   const sourceSetName = getSourceSetNameFromSource(result.layer);
@@ -120,6 +127,39 @@ export default function ResultItem({
   // A negative match shows its lowest token, not its highest.
   const shownIndex = result.rankedByLowest ? lowestIndex : result.maxValueIndex;
   const sortSum = searchSortIndexes.reduce((sum, index) => sum + result.values[index], 0);
+
+  // With an image, its patch tokens collapse into one token for the text view and get their own
+  // heatmap; sorting by many patches shows as one aggregated entry rather than a chip per patch.
+  const imagePositions = useMemo(() => searchImage?.info.tokenPositions ?? [], [searchImage]);
+  const tokenLabel = (index: number) =>
+    patchLabel(index, imagePositions, searchImage?.info.gridCols) ?? replaceHtmlAnomalies(tokens[index]);
+  const textView = useMemo(
+    () => (imagePositions.length > 0 ? collapseImageTokens(tokens, result.values, imagePositions) : undefined),
+    [tokens, result.values, imagePositions],
+  );
+  const textViewMaxIndex = textView
+    ? Math.max(
+        0,
+        imagePositions.includes(result.maxValueIndex)
+          ? textView.imageIndex
+          : textView.originalIndex.indexOf(result.maxValueIndex),
+      )
+    : result.maxValueIndex;
+  const imageSortIndexes = searchSortIndexes.filter((i) => imagePositions.includes(i));
+  const sortEntries: { key: string; label: string; value: number }[] = [
+    ...searchSortIndexes
+      .filter((i) => imageSortIndexes.length <= 1 || !imagePositions.includes(i))
+      .map((i) => ({ key: `${i}`, label: tokenLabel(i), value: result.values[i] })),
+    ...(imageSortIndexes.length > 1
+      ? [
+          {
+            key: 'image',
+            label: `${IMAGE_TOKEN_LABEL} \u00d7${imageSortIndexes.length}`,
+            value: imageSortIndexes.reduce((sum, i) => sum + result.values[i], 0),
+          },
+        ]
+      : []),
+  ];
 
   return (
     <a
@@ -166,21 +206,19 @@ export default function ResultItem({
                     <span className={`mt-0 text-[11px] ${valueColor(sortSum)}`}>{sortSum.toFixed(1)}</span>
                   </div>
                 )}
-                {searchSortIndexes.map((searchSortIndex) => (
-                  <div key={searchSortIndex} className="flex flex-col items-center justify-center gap-y-0.5">
+                {sortEntries.map((entry) => (
+                  <div key={entry.key} className="flex flex-col items-center justify-center gap-y-0.5">
                     <div className="whitespace-pre rounded bg-slate-200 px-1 font-mono text-xs font-medium">
-                      {replaceHtmlAnomalies(tokens[searchSortIndex])}
+                      {entry.label}
                     </div>
-                    <span className={`mt-0 text-[11px] ${valueColor(result.values[searchSortIndex])}`}>
-                      {result.values[searchSortIndex].toFixed(1)}
-                    </span>
+                    <span className={`mt-0 text-[11px] ${valueColor(entry.value)}`}>{entry.value.toFixed(1)}</span>
                   </div>
                 ))}
               </div>
             ) : (
               <div className="flex flex-col items-center gap-y-0.5 px-2 text-xs text-slate-700">
                 <div className="whitespace-pre rounded bg-slate-200 px-1 font-mono font-medium">
-                  {replaceHtmlAnomalies(tokens[shownIndex])}
+                  {tokenLabel(shownIndex)}
                 </div>
                 <span className={`mt-0 text-[11px] ${valueColor(result.values[shownIndex])}`}>
                   {result.values[shownIndex].toFixed(1)}
@@ -190,9 +228,9 @@ export default function ResultItem({
             <ActivationItem
               showLineBreaks={false}
               activation={{
-                values: result.values,
-                tokens,
-                maxValueTokenIndex: result.maxValueIndex,
+                values: textView?.values ?? result.values,
+                tokens: textView?.tokens ?? tokens,
+                maxValueTokenIndex: textViewMaxIndex,
                 maxValue: result.maxValue,
                 ...(result.rankedByLowest && {
                   minValue: result.values[lowestIndex],
@@ -207,6 +245,16 @@ export default function ResultItem({
               overrideTextSize="text-xs"
               dfa={dfa}
             />
+            {searchImage && (
+              <ImagePatchGrid
+                imageSrc={searchImage.imageBase64}
+                rows={searchImage.info.gridRows}
+                cols={searchImage.info.gridCols}
+                positions={imagePositions}
+                values={result.values}
+                sizePx={96}
+              />
+            )}
           </div>
 
           {showDashboards && externalDashboard.status === 'loading' && (

@@ -25,6 +25,7 @@ export type ActivationSourceResponse = Schemas['ActivationSourceResponse'];
 export type ActivationTopkByTokenResponse = Schemas['ActivationTopkByTokenResponse'];
 export type ActivationTopkByTokenBatchResponse = Schemas['ActivationTopkByTokenBatchResponse'];
 export type ActivationAttentionResponse = Schemas['ActivationAttentionResponse'];
+export type ActivationImage = Schemas['ActivationImage'];
 
 export type NPLogprob = Schemas['NPLogprob'];
 export type NPNormalize = Schemas['NPNormalize'];

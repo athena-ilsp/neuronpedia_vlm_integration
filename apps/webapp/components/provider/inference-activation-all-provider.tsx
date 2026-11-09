@@ -1,5 +1,7 @@
 'use client';
 
+import type { ActivationImage } from '@/lib/api/inference-types';
+import type { InferenceImageInput } from '@/lib/utils/inference';
 import { NeuronWithPartialRelations } from 'prisma/generated/zod';
 import { ReactNode, useEffect, useMemo, useState } from 'react';
 import { useGlobalContext } from './global-provider';
@@ -15,6 +17,14 @@ export type InferenceActivationAllResponse = {
   tokens: string[];
   result: InferenceActivationAllResult[];
   sortIndexes?: number[];
+  // Present for an image search: where the image's placeholder tokens are in `tokens`.
+  image?: ActivationImage;
+};
+
+// The image a search ran with, kept beside its token positions so results can draw patches.
+export type InferenceSearchImage = {
+  imageBase64: string;
+  info: ActivationImage;
 };
 
 export type InferenceActivationAllResult = {
@@ -42,7 +52,9 @@ export const [InferenceActivationAllContext, useInferenceActivationAllContext] =
     sourceSet: string,
     ignoreBos: boolean,
     sortIndex: number[],
+    image?: InferenceImageInput,
   ) => void;
+  searchImage: InferenceSearchImage | undefined;
   tokens: string[];
   setTokens: React.Dispatch<React.SetStateAction<string[]>>;
   overallMaxValue: number;
@@ -61,6 +73,7 @@ export default function InferenceActivationAllProvider({ children }: { children:
   const [resultsGrid, setResultsGrid] = useState<(InferenceActivationAllResult | undefined)[][]>([]);
   const [overallMaxValue, setOverallMaxValue] = useState(-10);
   const [tokens, setTokens] = useState<string[]>([]);
+  const [searchImage, setSearchImage] = useState<InferenceSearchImage | undefined>(undefined);
 
   useEffect(() => {
     if (searchResults.length > 0) {
@@ -81,6 +94,7 @@ export default function InferenceActivationAllProvider({ children }: { children:
     sourceSet: string,
     ignoreBos: boolean,
     sortIndexes: number[] = [],
+    image: InferenceImageInput | undefined = undefined,
   ) {
     if (!selectedLayers) {
       alert('Please select at least one layer to search.');
@@ -98,6 +112,7 @@ export default function InferenceActivationAllProvider({ children }: { children:
           sortIndexes: sortIndexes as number[],
           sourceSet,
           ignoreBos,
+          ...(image ?? {}),
         }),
       });
       const json = await response.json().catch(() => undefined);
@@ -125,6 +140,7 @@ export default function InferenceActivationAllProvider({ children }: { children:
       setSearchResults(resp.result);
       setSearchSearchSortIndexes(resp.sortIndexes || []);
       setTokens(resp.tokens);
+      setSearchImage(image && resp.image ? { imageBase64: image.imageBase64, info: resp.image } : undefined);
       setExploreState(InferenceActivationAllState.LOADED);
     } catch (error) {
       showToastServerError();
@@ -140,6 +156,7 @@ export default function InferenceActivationAllProvider({ children }: { children:
           exploreState,
           setExploreState,
           submitSearchAll,
+          searchImage,
           tokens,
           setTokens,
           searchResults,
@@ -149,7 +166,16 @@ export default function InferenceActivationAllProvider({ children }: { children:
           resultsGrid,
           setResultsGrid,
         }),
-        [exploreState, submitSearchAll, tokens, searchResults, overallMaxValue, searchSortIndexes, resultsGrid],
+        [
+          exploreState,
+          submitSearchAll,
+          searchImage,
+          tokens,
+          searchResults,
+          overallMaxValue,
+          searchSortIndexes,
+          resultsGrid,
+        ],
       )}
     >
       {children}

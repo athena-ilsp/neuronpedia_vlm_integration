@@ -12,6 +12,7 @@ import {
 import { Button } from '@/components/shadcn/button';
 import { DEFAULT_MODELID, DEFAULT_SOURCESET } from '@/lib/env';
 import { replaceHtmlAnomalies } from '@/lib/utils/activations';
+import { collapseImageTokens, IMAGE_TOKEN_LABEL } from '@/lib/utils/image-prompt';
 import { getFirstSourceSetForModel } from '@/lib/utils/source';
 import { SourceSetWithPartialRelations } from '@/prisma/generated/zod';
 import { useRouter } from '@bprogress/next';
@@ -22,6 +23,8 @@ import { HelpCircle, Search } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import ReactTextareaAutosize from 'react-textarea-autosize';
 import ExamplesButtons from './examples-buttons';
+import ImageInput, { useImageInputSupported } from './image-input';
+import ImagePatchGrid from './image-patch-grid';
 import ResultItem from './result-item';
 
 const MAX_SEARCH_QUERY_LENGTH_CHARS = 800;
@@ -49,8 +52,16 @@ export default function InferenceSearcher({
   showExamples?: boolean;
   filterToRelease?: string | undefined;
 }) {
-  const { exploreState, submitSearchAll, setTokens, tokens, searchSortIndexes, setSearchResults, searchResults } =
-    useInferenceActivationAllContext();
+  const {
+    exploreState,
+    submitSearchAll,
+    setTokens,
+    tokens,
+    searchSortIndexes,
+    setSearchResults,
+    searchResults,
+    searchImage,
+  } = useInferenceActivationAllContext();
   const { getSourcesForSourceSet, getDefaultModel, globalModels } = useGlobalContext();
   const [sortIndexes, setSortIndexes] = useState<number[]>(initialSortIndexes || []);
   const [modelId, setModelId] = useState(initialModelId || DEFAULT_MODELID || getDefaultModel()?.id || DEFAULT_MODELID);
@@ -61,6 +72,11 @@ export default function InferenceSearcher({
   const [availableLayers, setAvailableLayers] = useState<string[]>([]);
   const [showDashboards, setShowDashboards] = useState(true);
   const [needsReloadSearch, setNeedsReloadSearch] = useState(false);
+  // Image prompts, for models whose inference host takes them. Shown only when it does.
+  const imageInputSupported = useImageInputSupported(modelId);
+  const [image, setImage] = useState<string | undefined>(undefined);
+  const [ignoreChatTemplateTokens, setIgnoreChatTemplateTokens] = useState(true);
+  const activeImage = imageInputSupported ? image : undefined;
   const formRef = useRef<
     FormikProps<{
       searchQuery: string;
@@ -103,7 +119,7 @@ export default function InferenceSearcher({
     if (exploreState === InferenceActivationAllState.LOADED) {
       setNeedsReloadSearch(true);
     }
-  }, [selectedLayers, sortIndexes, ignoreBos]);
+  }, [selectedLayers, sortIndexes, ignoreBos, image, ignoreChatTemplateTokens]);
 
   function searchClicked() {
     const values = formRef.current?.values;
@@ -118,17 +134,35 @@ export default function InferenceSearcher({
       alert('Please select at least one layer to search.');
       return;
     }
-    if (values.searchQuery.trim().length === 0) {
+    if (values.searchQuery.trim().length === 0 && !activeImage) {
       alert('Please enter a search query.');
       return;
     }
-    if (loadResultsInNewPage) {
+    // An image cannot travel in a URL, so an image search always runs in place.
+    if (loadResultsInNewPage && !activeImage) {
       router.push(makeUrl(values.searchQuery));
       return;
     }
     setSearchResults([]);
     setTokens([]);
-    submitSearchAll(modelId, values.searchQuery, selectedLayers, sourceSet, ignoreBos, sortIndexes);
+    submitSearchAll(
+      modelId,
+      values.searchQuery,
+      selectedLayers,
+      sourceSet,
+      ignoreBos,
+      sortIndexes,
+      activeImage ? { imageBase64: activeImage, ignoreChatTemplateTokens } : undefined,
+    );
+  }
+
+  // Token chips: with an image, its patch tokens collapse into one chip that selects them all.
+  const imagePositions = searchImage?.info.tokenPositions ?? [];
+  const chips = collapseImageTokens(tokens, [], imagePositions);
+  const allImageSelected = imagePositions.length > 0 && imagePositions.every((p) => sortIndexes.includes(p));
+  function toggleSortIndexes(indexes: number[], on: boolean) {
+    const without = sortIndexes.filter((i) => !indexes.includes(i));
+    setSortIndexes((on ? [...without, ...indexes] : without).toSorted((a, b) => a - b));
   }
 
   // load query if we have one
@@ -141,7 +175,7 @@ export default function InferenceSearcher({
 
   // update the URL with query param for the search
   useEffect(() => {
-    if (exploreState === InferenceActivationAllState.LOADED && formRef.current) {
+    if (exploreState === InferenceActivationAllState.LOADED && formRef.current && !searchImage) {
       window.history.pushState({}, '', makeUrl(formRef.current.values.searchQuery));
       setAvailableLayers(getSourcesForSourceSet(modelId, sourceSet, false, true, false));
     } else {
@@ -210,6 +244,18 @@ export default function InferenceSearcher({
                 className={`flex w-full gap-x-1.5 gap-y-1.5 sm:max-w-screen-lg sm:flex-row ${exploreState === InferenceActivationAllState.LOADED ? 'flex-row' : 'flex-col'}`}
               >
                 <div className="mt-0 flex flex-1 flex-row gap-x-2">
+                  {imageInputSupported && (
+                    <ImageInput
+                      image={image}
+                      disabled={exploreState === InferenceActivationAllState.RUNNING}
+                      onChange={(newImage) => {
+                        setImage(newImage);
+                        if (sortIndexes.length > 0) {
+                          setSortIndexes([]);
+                        }
+                      }}
+                    />
+                  )}
                   <ReactTextareaAutosize
                     name="searchQuery"
                     disabled={exploreState === InferenceActivationAllState.RUNNING}
@@ -222,15 +268,19 @@ export default function InferenceSearcher({
                       }
                       setFieldValue('searchQuery', e.target.value);
                     }}
-                    required
-                    placeholder={`Enter any text or sentence to search (e.g, 'I like cats!')`}
+                    required={!activeImage}
+                    placeholder={
+                      activeImage
+                        ? 'Optional: add text to go with the image'
+                        : `Enter any text or sentence to search (e.g, 'I like cats!')`
+                    }
                     className="mt-0 min-w-[10px] flex-1 resize-none rounded-md border border-slate-200 px-3 py-2 text-left font-mono text-xs font-medium text-slate-800 placeholder-slate-400 shadow-sm transition-all focus:border-sky-700 focus:outline-none focus:ring-0 disabled:bg-slate-200 sm:text-[13px]"
                   />
                   <Button
                     variant="default"
                     type="submit"
                     disabled={
-                      values.searchQuery.length === 0 ||
+                      (values.searchQuery.length === 0 && !activeImage) ||
                       exploreState === InferenceActivationAllState.RUNNING ||
                       (exploreState === InferenceActivationAllState.LOADED && !needsReloadSearch)
                     }
@@ -355,6 +405,36 @@ export default function InferenceSearcher({
                   Ignore BOS Results
                 </ToggleGroup.Item>
               </ToggleGroup.Root>
+              {activeImage && (
+                <ToggleGroup.Root
+                  className="inline-flex flex-1 overflow-hidden rounded border border-slate-300 bg-slate-300 px-0 py-0 sm:rounded"
+                  type="single"
+                  value={ignoreChatTemplateTokens ? 'ignore' : 'show'}
+                  onValueChange={(value) => {
+                    if (value) {
+                      setIgnoreChatTemplateTokens(value === 'ignore');
+                    }
+                  }}
+                  aria-label="Rank on the image and text only, ignoring the chat template's tokens"
+                >
+                  <ToggleGroup.Item
+                    key="show"
+                    className="flex-auto items-center rounded-l px-1 py-1 text-[10px] font-medium text-slate-500 transition-all hover:bg-slate-100 data-[state=on]:bg-white data-[state=on]:text-slate-600 sm:px-4 sm:text-[11px]"
+                    value="show"
+                    aria-label="show"
+                  >
+                    Show Template Tokens
+                  </ToggleGroup.Item>
+                  <ToggleGroup.Item
+                    key="ignore"
+                    className="flex-auto items-center rounded-r px-1 py-1 text-[10px] font-medium text-slate-500 transition-all hover:bg-slate-100 data-[state=on]:bg-white data-[state=on]:text-slate-600 sm:px-4 sm:text-[11px]"
+                    value="ignore"
+                    aria-label="ignore"
+                  >
+                    Ignore Template Tokens
+                  </ToggleGroup.Item>
+                </ToggleGroup.Root>
+              )}
             </div>
             <div className="sticky left-0.5 top-0 mb-1 mt-2 hidden w-full text-left font-sans text-[11px] font-medium text-slate-400 sm:block">
               Select tokens below to sort results by highest activations for those tokens.
@@ -379,31 +459,45 @@ export default function InferenceSearcher({
                   ALL TOKENS
                 </button>
 
-                {tokens.map((token, index) => (
-                  <div key={index} className="px-[1px] text-center leading-none">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (sortIndexes.indexOf(index) !== -1) {
-                          // has it, remove it
-                          setSortIndexes(sortIndexes.filter((sortIndex) => sortIndex !== index).toSorted());
-                        } else {
-                          // doesnt have it, add it
-                          setSortIndexes([...sortIndexes, index].toSorted());
-                        }
-                      }}
-                      className={`flex-1 cursor-pointer whitespace-pre rounded border px-[2px] py-0.5 font-mono text-[12px] font-medium leading-none hover:border-emerald-600 ${
-                        sortIndexes.indexOf(index) !== -1
-                          ? 'border-emerald-600 bg-emerald-600 text-white'
-                          : 'border-slate-300 text-slate-600'
-                      }`}
-                    >
-                      {replaceHtmlAnomalies(token)}
-                    </button>
-                  </div>
-                ))}
+                {chips.tokens.map((token, chipIndex) => {
+                  const isImageChip = chipIndex === chips.imageIndex;
+                  const indexes = isImageChip ? imagePositions : [chips.originalIndex[chipIndex]];
+                  const isSelected = isImageChip ? allImageSelected : sortIndexes.includes(indexes[0]);
+                  return (
+                    <div key={chips.originalIndex[chipIndex]} className="px-[1px] text-center leading-none">
+                      <button
+                        type="button"
+                        title={isImageChip ? `All ${imagePositions.length} image patches` : undefined}
+                        onClick={() => toggleSortIndexes(indexes, !isSelected)}
+                        className={`flex-1 cursor-pointer whitespace-pre rounded border px-[2px] py-0.5 font-mono text-[12px] font-medium leading-none hover:border-emerald-600 ${
+                          isSelected
+                            ? 'border-emerald-600 bg-emerald-600 text-white'
+                            : 'border-slate-300 text-slate-600'
+                        }`}
+                      >
+                        {isImageChip ? IMAGE_TOKEN_LABEL : replaceHtmlAnomalies(token)}
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             </div>
+            {searchImage && (
+              <div className="mt-2 flex flex-row items-start gap-x-3">
+                <ImagePatchGrid
+                  imageSrc={searchImage.imageBase64}
+                  rows={searchImage.info.gridRows}
+                  cols={searchImage.info.gridCols}
+                  positions={imagePositions}
+                  selected={sortIndexes}
+                  onTogglePatch={(tokenIndex) => toggleSortIndexes([tokenIndex], !sortIndexes.includes(tokenIndex))}
+                />
+                <div className="max-w-xs text-left font-sans text-[11px] font-medium leading-snug text-slate-400">
+                  Click patches to sort results by their activations on those parts of the image, or the{' '}
+                  {IMAGE_TOKEN_LABEL} chip above for the whole image.
+                </div>
+              </div>
+            )}
           </div>
           <div className="mx-auto flex w-full flex-col items-center overscroll-contain bg-white">
             {exploreState === InferenceActivationAllState.LOADED && needsReloadSearch && (
@@ -439,6 +533,7 @@ export default function InferenceSearcher({
                     topExplanation={topExplanation}
                     searchSortIndexes={searchSortIndexes}
                     showDashboards={showDashboards}
+                    searchImage={searchImage}
                   />
                 );
               })}
