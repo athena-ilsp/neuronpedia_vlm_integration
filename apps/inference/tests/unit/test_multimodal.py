@@ -79,6 +79,41 @@ def test_image_grid_follows_image_grid_thw_after_the_spatial_merge():
     assert multimodal._image_grid(processor, batch, 100) == (None, None)
 
 
+def test_locate_text_finds_the_last_exact_run_after_start():
+    #                  0  1  2  3  4  5  6  7  8
+    ids = [2, 105, 7, 9, 9, 9, 7, 8, 106]
+    assert multimodal._locate_text(ids, [7, 8], start=0) == [6, 7]
+    # The run before `start` (inside the image, say) is not the user's text.
+    assert multimodal._locate_text(ids, [7], start=3) == [6]
+    assert multimodal._locate_text(ids, [5, 5], start=0) == []
+    assert multimodal._locate_text(ids, [], start=0) == []
+
+
+def _image_prompt(n_tokens: int, image: list[int], text: list[int], unlocated: bool = False) -> multimodal.ImagePrompt:
+    return multimodal.ImagePrompt(
+        tokens=torch.zeros(n_tokens, dtype=torch.long),
+        str_tokens=["t"] * n_tokens,
+        forward_kwargs={},
+        image_token="<img>",
+        image_token_positions=image,
+        grid_rows=None,
+        grid_cols=None,
+        text_token_positions=text,
+        has_unlocated_text=unlocated,
+    )
+
+
+def test_template_positions_are_everything_but_image_and_text():
+    # <bos> <turn> user \n <boi> img img <eoi> \n text text <eot>
+    prompt = _image_prompt(12, image=[5, 6], text=[9, 10])
+    assert prompt.template_positions() == [0, 1, 2, 3, 4, 7, 8, 11]
+
+
+def test_unlocated_text_masks_nothing_rather_than_the_users_own_tokens():
+    prompt = _image_prompt(12, image=[5, 6], text=[], unlocated=True)
+    assert prompt.template_positions() == []
+
+
 def test_build_image_prompt_refuses_off_the_eager_backend_before_decoding():
     with pytest.raises(BackendUnsupported, match="eager backend.*vllm"):
         build_image_prompt(cast(InterpModel, _NotEager()), "hi", "not even an image")

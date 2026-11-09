@@ -71,6 +71,22 @@ class ImagePrompt:
     #: Patch grid the image positions tile, row-major, when the processor states or implies one.
     grid_rows: int | None
     grid_cols: int | None
+    #: Indices into ``tokens`` of the user's text, in order. Empty with no text, and also when the
+    #: text did not tokenize to the same ids inside the template (see :func:`_locate_text`).
+    text_token_positions: list[int]
+    #: True when there was text but :func:`_locate_text` could not find its ids in the prompt.
+    has_unlocated_text: bool = False
+
+    def template_positions(self) -> list[int]:
+        """Positions the chat template added: BOS, turn markers, role names, image delimiters.
+
+        Everything that is neither an image placeholder nor the user's text. Empty when the text
+        could not be located, so a caller masking these never masks the user's own tokens.
+        """
+        if self.has_unlocated_text:
+            return []
+        content = set(self.image_token_positions) | set(self.text_token_positions)
+        return [i for i in range(len(self.str_tokens)) if i not in content]
 
 
 def decode_image(image_base64: str) -> Image.Image:
@@ -88,6 +104,23 @@ def decode_image(image_base64: str) -> Image.Image:
             return img.convert("RGB")
     except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as e:
         raise MultimodalInputError(f"Could not read the image: {e}") from e
+
+
+def _locate_text(token_ids: list[int], text_ids: list[int], start: int) -> list[int]:
+    """Positions of ``text_ids`` as one contiguous run in ``token_ids`` at or after ``start``.
+
+    The last match wins, since the user's text follows the image and any system preamble. Empty
+    when there is no exact match -- a template can merge the text's first token with the
+    whitespace before it -- in which case the caller reports the text as unlocated rather than
+    guessing at its span.
+    """
+    n = len(text_ids)
+    if n == 0:
+        return []
+    for begin in range(len(token_ids) - n, start - 1, -1):
+        if token_ids[begin : begin + n] == text_ids:
+            return list(range(begin, begin + n))
+    return []
 
 
 @lru_cache(maxsize=2)
@@ -152,6 +185,10 @@ def build_image_prompt(model: InterpModel, text: str, image_base64: str) -> Imag
     }
     positions = (tokens == image_token_id).nonzero().flatten().tolist()
     rows, cols = _image_grid(processor, batch, len(positions))
+    text_ids = processor.tokenizer(text, add_special_tokens=False)["input_ids"] if text else []
+    text_positions = _locate_text(tokens.tolist(), text_ids, start=positions[-1] + 1 if positions else 0)
+    if text_ids and not text_positions:
+        logger.warning("Could not locate the prompt text inside the chat template; template masking is off")
     return ImagePrompt(
         tokens=tokens.to(model.device),
         str_tokens=model.to_str_tokens(tokens),
@@ -160,4 +197,6 @@ def build_image_prompt(model: InterpModel, text: str, image_base64: str) -> Imag
         image_token_positions=positions,
         grid_rows=rows,
         grid_cols=cols,
+        text_token_positions=text_positions,
+        has_unlocated_text=bool(text_ids) and not text_positions,
     )

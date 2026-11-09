@@ -148,6 +148,11 @@ class ActivationImage(BaseSchema):
     grid_cols: StrictInt | None = Field(
         default=None, description="Columns of the patch grid the image positions tile (row-major), when known."
     )
+    template_token_positions: list[StrictInt] = Field(
+        default_factory=list,
+        description="Indices into `tokens` the chat template added (BOS, turn markers, role names, image "
+        "delimiters): neither image nor user text. Empty if the text could not be located in the template.",
+    )
 
 
 class ActivationAllRequest(BaseSchema):
@@ -170,6 +175,13 @@ class ActivationAllRequest(BaseSchema):
     num_results: StrictInt | None = Field(default=25, description="Optional. The number of top features to return.")
     rank_by_percentile: StrictBool = Field(default=False, description=RANK_BY_PERCENTILE_DESCRIPTION)
     image_base64: StrictStr | None = Field(default=None, description=IMAGE_BASE64_DESCRIPTION)
+    ignore_chat_template_tokens: StrictBool = Field(
+        default=False,
+        description="Optional. With an image, rank features on the user's image and text only: activations at "
+        "the tokens the chat template added are zeroed before ranking. On Gemma 3 the first turn marker "
+        "otherwise carries an activation spike that dominates every source. No effect without an image, "
+        "where the prompt is used as given.",
+    )
 
 
 class ActivationAllResponse(BaseSchema):

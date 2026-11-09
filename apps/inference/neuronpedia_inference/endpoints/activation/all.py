@@ -153,6 +153,8 @@ class ActivationProcessor:
         self._dfa_cache: dict[int, DfaInputs] = {}
         # Set when the request carries an image; DFA has no image path yet and refuses it.
         self._image_prompt: ImagePrompt | None = None
+        # Token positions zeroed in every source before ranking (ignore_chat_template_tokens).
+        self._masked_positions: list[int] = []
 
     async def process_activations(self, request: ActivationAllRequest) -> ActivationAllResponse:
         model = Model.get_instance()
@@ -193,6 +195,7 @@ class ActivationProcessor:
                 token_positions=image.image_token_positions,
                 grid_rows=image.grid_rows,
                 grid_cols=image.grid_cols,
+                template_token_positions=image.template_positions(),
             ),
         )
 
@@ -213,6 +216,8 @@ class ActivationProcessor:
             tokens = self._image_prompt.tokens
             str_tokens = self._image_prompt.str_tokens
             forward_kwargs = self._image_prompt.forward_kwargs
+            if request.ignore_chat_template_tokens:
+                self._masked_positions = self._image_prompt.template_positions()
         else:
             tokens = model.to_tokens(
                 text,
@@ -273,6 +278,8 @@ class ActivationProcessor:
 
             if drop_bos:
                 activations_by_index[:, 0] = 0
+            if self._masked_positions:
+                activations_by_index[:, self._masked_positions] = 0
 
             candidates = self._source_top_rows(activations_by_index, layer_num, request, num_results)
             top_rows = self._merge_top_rows(top_rows, candidates, request, num_results)

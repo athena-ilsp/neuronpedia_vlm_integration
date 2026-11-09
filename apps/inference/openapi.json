@@ -238,6 +238,12 @@
             "title": "Ignorebos",
             "type": "boolean"
           },
+          "ignoreChatTemplateTokens": {
+            "default": false,
+            "description": "Optional. With an image, rank features on the user's image and text only: activations at the tokens the chat template added are zeroed before ranking. On Gemma 3 the first turn marker otherwise carries an activation spike that dominates every source. No effect without an image, where the prompt is used as given.",
+            "title": "Ignorechattemplatetokens",
+            "type": "boolean"
+          },
           "imageBase64": {
             "anyOf": [
               {
@@ -469,6 +475,14 @@
             "description": "The placeholder token every image position carries.",
             "title": "Imagetoken",
             "type": "string"
+          },
+          "templateTokenPositions": {
+            "description": "Indices into `tokens` the chat template added (BOS, turn markers, role names, image delimiters): neither image nor user text. Empty if the text could not be located in the template.",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Templatetokenpositions",
+            "type": "array"
           },
           "tokenPositions": {
             "description": "Indices into `tokens` of the image positions, in order.",

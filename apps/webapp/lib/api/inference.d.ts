@@ -508,6 +508,12 @@ export interface components {
        */
       ignoreBos: boolean;
       /**
+       * Ignorechattemplatetokens
+       * @description Optional. With an image, rank features on the user's image and text only: activations at the tokens the chat template added are zeroed before ranking. On Gemma 3 the first turn marker otherwise carries an activation spike that dominates every source. No effect without an image, where the prompt is used as given.
+       * @default false
+       */
+      ignoreChatTemplateTokens: boolean;
+      /**
        * Imagebase64
        * @description Optional. A base64 image (a bare string or a data URL) for a vision-language model. With an image, the prompt becomes one chat user turn, image first, rendered by the model's own chat template; text-only requests keep the raw prompt. Needs the eager backend.
        */
@@ -620,6 +626,11 @@ export interface components {
        * @description The placeholder token every image position carries.
        */
       imageToken: string;
+      /**
+       * Templatetokenpositions
+       * @description Indices into `tokens` the chat template added (BOS, turn markers, role names, image delimiters): neither image nor user text. Empty if the text could not be located in the template.
+       */
+      templateTokenPositions?: number[];
       /**
        * Tokenpositions
        * @description Indices into `tokens` of the image positions, in order.
