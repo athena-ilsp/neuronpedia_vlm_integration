@@ -31,6 +31,8 @@ Usage: source-set add --model <id> --set <name> --layers <spec> [options]
   --model-layers <n>      layer count, needed only when the model does not exist yet
   --owner <name>          model owner, when creating the model (default: Unknown)
   --instruct              mark a newly created model as instruction-tuned
+  --stubs <count>         also create <count> feature stubs per source (indexes 0..count-1), so
+                          feature pages exist; e.g. the SAE width, or the MLP width for neurons
   --remote                allow writing to a database that is not on this machine
 `;
 
@@ -98,9 +100,14 @@ async function add(args: Map<string, string>) {
 
   const description =
     args.get('description') || (setName === NEURONS_SOURCESET ? 'MLP neurons' : `${setName} (registered locally)`);
+  const stubs = args.get('stubs');
+  // With stubs every feature has a page (empty of precomputed activations), which is what the
+  // webapp's `hasDashboards` gates on -- the model page lists, and searches, only sets that have it.
+  // Without stubs there is nothing to open, so the flag stays off. Only ever turned on here.
+  const dashboards = stubs !== undefined ? { hasDashboards: true } : {};
   await prisma.sourceSet.upsert({
     where: { modelId_name: { modelId, name: setName } },
-    update: { description, visibility: Visibility.PUBLIC, allowInferenceSearch: true },
+    update: { description, visibility: Visibility.PUBLIC, allowInferenceSearch: true, ...dashboards },
     create: {
       modelId,
       name: setName,
@@ -109,8 +116,7 @@ async function add(args: Map<string, string>) {
       creatorName: 'Local',
       creatorId: DEFAULT_CREATOR_USER_ID,
       visibility: Visibility.PUBLIC,
-      // No dashboards: these sources come with no precomputed top activations.
-      hasDashboards: false,
+      hasDashboards: stubs !== undefined,
       allowInferenceSearch: true,
     },
   });
@@ -122,12 +128,51 @@ async function add(args: Map<string, string>) {
       setName,
       creatorId: DEFAULT_CREATOR_USER_ID,
       visibility: Visibility.PUBLIC,
-      hasDashboards: false,
+      hasDashboards: stubs !== undefined,
       inferenceEnabled: true,
     })),
     skipDuplicates: true,
   });
   console.log(`Source set ${modelId}/${setName}: ${count} new of ${layers.length} sources`);
+
+  if (stubs !== undefined) {
+    await prisma.source.updateMany({
+      where: { modelId, setName, id: { in: layers.map((layer) => sourceId(layer, setName)) } },
+      data: { hasDashboards: true },
+    });
+    const perSource = Number(stubs);
+    if (!Number.isInteger(perSource) || perSource < 1) {
+      throw new Error(`--stubs must be a positive integer, not "${stubs}"`);
+    }
+    await createStubs(
+      modelId,
+      layers.map((layer) => sourceId(layer, setName)),
+      perSource,
+    );
+  }
+}
+
+/** Empty Neuron rows (no activations or explanations) so each feature has a page to open. */
+async function createStubs(modelId: string, sources: string[], perSource: number) {
+  const CHUNK = 5000;
+  let created = 0;
+  for (const layer of sources) {
+    for (let start = 0; start < perSource; start += CHUNK) {
+      const end = Math.min(start + CHUNK, perSource);
+      // eslint-disable-next-line no-await-in-loop -- sequential chunks keep each insert bounded
+      const { count } = await prisma.neuron.createMany({
+        data: Array.from({ length: end - start }, (_, i) => ({
+          modelId,
+          layer,
+          index: `${start + i}`,
+          creatorId: DEFAULT_CREATOR_USER_ID,
+        })),
+        skipDuplicates: true,
+      });
+      created += count;
+    }
+  }
+  console.log(`Feature stubs: ${created} new (${perSource} per source x ${sources.length} sources)`);
 }
 
 async function main() {
