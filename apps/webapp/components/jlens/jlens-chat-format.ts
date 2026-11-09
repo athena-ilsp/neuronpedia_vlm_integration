@@ -138,22 +138,27 @@ export function groupTokensBySpans(tokens: LensTokenMessage[]): {
   let prevSection: string | null = null;
   let prevChannel: string | null = null;
   let genBlock = 0;
+  let msgBlock = 0;
   for (let i = 0; i < tokens.length; i += 1) {
     const t = tokens[i];
     const mi = t.message_index ?? null;
     const channel = t.channel ?? null;
+    // A reasoning-tag block ends with no header of its own, so a switch between
+    // two named channels (`analysis` -> `final`) opens a block. Both sides must
+    // be named: harmony's structural markers sit at `null` before their channel
+    // name is parsed, and splitting on that would break a single harmony block.
+    const switchesChannel = prevChannel != null && channel != null && channel !== prevChannel;
     let key: string;
     if (mi != null) {
-      key = `msg:${mi}`;
+      // An input message with reasoning splits the same way.
+      if (switchesChannel) {
+        msgBlock += 1;
+      }
+      key = `msg:${mi}:${msgBlock}`;
     } else {
       // Generated / scaffold token. A new harmony block starts when a header
       // token follows a non-header token (e.g. `<|end|>` then `<|start|>`).
       const startsHeaderBlock = t.section === 'header' && prevSection != null && prevSection !== 'header';
-      // ...and a reasoning-tag block ends without one, so a switch between two
-      // named channels (`analysis` -> `final`) opens a block too. Both sides must
-      // be named: harmony's structural markers sit at `null` before their channel
-      // name is parsed, and splitting on that would break a single harmony block.
-      const switchesChannel = prevChannel != null && channel != null && channel !== prevChannel;
       if (startsHeaderBlock || switchesChannel) {
         genBlock += 1;
       }
@@ -243,6 +248,31 @@ export function extractAssistantText(tokens: LensTokenMessage[], prefill = ''): 
     picked = generated.filter((t) => sectionBucket(t.section) === 'content');
   }
   return joinPrefill(prefill, tokensToText(picked));
+}
+
+// The user prefill of the last assistant turn: its input text before the first
+// generated token. A prefill with reasoning shows as two bubbles, and its think
+// tags are header and footer tokens with a channel. Input messages carry no
+// channel, so the role header and the template scaffold have none.
+export function lastTurnPrefill(groups: JlensTokenGroup[]): string {
+  const last = groups[groups.length - 1];
+  if (!last || last.role !== 'assistant') {
+    return '';
+  }
+  const turn = last.messageIndex == null ? [last] : groups.filter((g) => g.messageIndex === last.messageIndex);
+  const tokens = turn
+    .flatMap((g) => [...g.headerTokens, ...g.contentTokens, ...g.footerTokens])
+    .sort((a, b) => a.position - b.position);
+  const prefix: LensTokenMessage[] = [];
+  for (const t of tokens) {
+    if (t.is_generated) {
+      return prefix.some((p) => p.token.trim() !== '') ? tokensToText(prefix) : '';
+    }
+    if (sectionBucket(t.section) === 'content' || t.channel != null) {
+      prefix.push(t);
+    }
+  }
+  return '';
 }
 
 // Trailing whitespace is always dropped (the chat template re-adds its own

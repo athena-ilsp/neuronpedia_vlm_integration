@@ -53,10 +53,18 @@ exports/<np_model_id>/jpp/Salesforce-wikitext/
   config.yaml           # the fit config, the source, the command, attribution
 ```
 
+The script loads the file weights-only, so it runs no code from it. If the file holds an
+object other than tensors and plain containers, the script stops and names it. Add
+`--allow-global MODULE.NAME` only if you trust that object.
+
 The script changes the key names and casts the fp32 maps to fp16. It stops if a map overflows
 fp16, if the relative error is above `2e-3` (the bf16 cast the server does is about
 `1.7e-3`), or if the layers and width do not agree with the
 model's `config.json`. The maps cover every block but the final one, which is the target.
+
+**R-Lens:** an LRP fit's pooled lens (`merge-experts --pooled-lens-out`) takes `--method rlens`
+and goes to `exports/<np_model_id>/rlens/Salesforce-wikitext/<model>_rlens.pt`. The server
+has no R-Lens type yet.
 
 **DeepSeek-V4-Flash** has 4 residual streams, and the server refuses a lens that does not say
 which activation it reads. The J++ fit reads the mean over the streams

@@ -12,13 +12,19 @@
 # uv run python jpp/convert-jpp-lens.py /tmp/koayon/qwen3.5-9b/lens.pt \
 #   --np-model-id qwen3.5-9b --source "koayon/jpp-lenses@<sha>:qwen3.5-9b/lens.pt"
 #
+# An R-Lens (the pooled lens of an LRP fit, merge-experts --pooled-lens-out) takes
+# --method rlens and goes to <np_model_id>/rlens/<dataset-dir>/<slug>_rlens.pt.
+# A Jacobian lens fitted with this code (lrp_mode 'none') takes --method jlens.
+#
 # DeepSeek-V4-Flash has 4 residual streams. The J++ fit reads their mean:
 #   ... --stream-reduce mean --derived-from "safety-research/jpp_lens workspace_lens/residual_streams.py"
 
 import argparse
 import datetime as dt
+import importlib
 import importlib.util
 import json
+import pickle
 import re
 import shlex
 import sys
@@ -45,6 +51,23 @@ ATTRIBUTION = (
     "Enables More Faithful Workspace Lenses' (2026), Apache-2.0. Converted via Neuronpedia "
     "convert-jpp-lens.py; the maps are not changed."
 )
+RLENS_ATTRIBUTION = (
+    "R-Lens fitted with the J++ Lens code by Ayonrinde & Lindsey (safety-research/jpp_lens, "
+    "2026), Apache-2.0: the pooled lens of an LRP fit (lrp_mode 'rlens'). Converted via "
+    "Neuronpedia convert-jpp-lens.py; the maps are not changed."
+)
+JLENS_ATTRIBUTION = (
+    "Jacobian lens ('jlens') by Anthropic PBC (https://github.com/anthropics/jlens), "
+    "fitted with the J++ Lens code by Ayonrinde & Lindsey (safety-research/jpp_lens, "
+    "2026), Apache-2.0: the pooled lens of a plain fit (lrp_mode 'none'). Converted via "
+    "Neuronpedia convert-jpp-lens.py; the maps are not changed."
+)
+# --method: (lens name, folder and file suffix, attribution).
+METHODS = {
+    "jpp": ("J++ Lens", "jpp", "_jpp_lens.pt", ATTRIBUTION),
+    "rlens": ("R-Lens", "rlens", "_rlens.pt", RLENS_ATTRIBUTION),
+    "jlens": ("Jacobian Lens", "jlens", "_jacobian_lens.pt", JLENS_ATTRIBUTION),
+}
 
 # fp16 keeps the relative error near 2e-4. Layers with very small values (Gemma 4 31B) reach
 # 1.1e-3. The server holds the maps in bf16 (about 1.7e-3), so below this limit the fp16
@@ -61,6 +84,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--np-model-id", required=True, help="e.g. qwen3.6-27b")
     parser.add_argument(
+        "--method",
+        default="jpp",
+        choices=sorted(METHODS),
+        help=(
+            "'rlens' for the pooled lens of an LRP fit (merge-experts --pooled-lens-out), "
+            "'jlens' for a plain fit"
+        ),
+    )
+    parser.add_argument(
         "--hf-model-name",
         default=None,
         help="HF model id; defaults to the fit config's hf_model_name",
@@ -73,7 +105,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--out-dir",
         default="exports",
-        help="writes <out-dir>/<np_model_id>/jpp/<dataset-dir>/<slug>_jpp_lens.pt",
+        help="writes <out-dir>/<np_model_id>/<method>/<dataset-dir>/<slug>_<method>[_lens].pt",
     )
     parser.add_argument(
         "--dataset-dir",
@@ -100,7 +132,55 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="do not compare the layers and d_model with the model's config.json",
     )
+    parser.add_argument(
+        "--allow-global",
+        action="append",
+        default=[],
+        metavar="MODULE.NAME",
+        help=(
+            "let the weights-only load build this object, e.g. pathlib.PosixPath. "
+            "Repeat for each. Use only after the load names it and you trust it."
+        ),
+    )
     return parser.parse_args()
+
+
+def _resolve_global(dotted: str) -> Any:
+    module, _, name = dotted.rpartition(".")
+    if not module:
+        raise SystemExit(f"--allow-global needs MODULE.NAME, not {dotted!r}")
+    try:
+        return getattr(importlib.import_module(module), name)
+    except (ImportError, AttributeError) as exc:
+        raise SystemExit(f"--allow-global {dotted}: {exc}") from exc
+
+
+def load_fit(path: Path, allow_globals: list[str]) -> dict[str, Any]:
+    """Load the fit without running code from the file.
+
+    Lens files come from third parties, and a full unpickle runs any code they hold.
+    A weights-only load admits only tensors and plain containers, which is all a
+    J++ fit needs. When a file holds another object, stop and name it.
+    """
+    allowed = [_resolve_global(name) for name in allow_globals]
+    try:
+        with torch.serialization.safe_globals(allowed):
+            return torch.load(path, map_location="cpu", mmap=True, weights_only=True)
+    except pickle.UnpicklingError as exc:
+        # Torch's message also suggests weights_only=False, so show only the line that
+        # names the object.
+        detail = next(
+            (
+                line.strip()
+                for line in str(exc).splitlines()
+                if "WeightsUnpickler error" in line
+            ),
+            str(exc),
+        )
+        raise SystemExit(
+            f"{path} holds an object that a weights-only load refuses:\n  {detail}\n"
+            "Make sure that you trust this object, then add --allow-global MODULE.NAME for it."
+        ) from exc
 
 
 def _slug(hf_model_id: str) -> str:
@@ -206,9 +286,10 @@ def write_config_yaml(
     fp16_rel_err: float,
 ) -> Path:
     """config.yaml in the shape the Jacobian lens exports have."""
+    lens_name, _, _, attribution = METHODS[args.method]
     header = [
-        "# J++ Lens -- converted by Neuronpedia convert-jpp-lens.py",
-        f"# {ATTRIBUTION}",
+        f"# {lens_name} -- converted by Neuronpedia convert-jpp-lens.py",
+        f"# {attribution}",
         "#",
         "# This lens was NOT fitted by run-all-fit-lens.py. The `fit` block is the J++ fit's",
         "# config mapped onto our field names (null where it has no counterpart), and",
@@ -250,7 +331,7 @@ def write_config_yaml(
             "max_chars": None,
         },
         "fit": {
-            "method": "jpp",
+            "method": args.method,
             "n_prompts": config.get("num_prompts_trained_on"),
             "max_seq_len": config.get("max_seq_len"),
             "target_layer": layers[-1] + 1,
@@ -273,7 +354,7 @@ def write_config_yaml(
         },
         "extra_metadata": extra or None,
         "command": shlex.join(sys.argv),
-        "attribution": ATTRIBUTION,
+        "attribution": attribution,
     }
     out_path = out_dir / "config.yaml"
     with open(out_path, "w") as f:
@@ -289,9 +370,18 @@ def main() -> None:
     if not src.is_file():
         raise SystemExit(f"no such lens: {src}")
     print(f"== reading {src.name} ({src.stat().st_size / 2**30:.2f} GiB) ==")
-    # The fit's config holds plain Python values only, but it is not saved weights-only.
-    raw = torch.load(src, map_location="cpu", mmap=True, weights_only=False)
+    raw = load_fit(src, args.allow_global)
     layers, d_model, config = validate(raw, src)
+    _, method_dir, file_suffix, _ = METHODS[args.method]
+    if args.method == "rlens" and config.get("lrp_mode") != "rlens":
+        raise SystemExit(
+            f"--method rlens needs an lrp_mode 'rlens' fit, not {config.get('lrp_mode')!r}"
+        )
+    if args.method == "jlens" and config.get("lrp_mode") not in (None, "none"):
+        raise SystemExit(
+            "--method jlens needs a plain fit (lrp_mode 'none'), "
+            f"not {config.get('lrp_mode')!r}"
+        )
     hf_model_name = args.hf_model_name or config.get("hf_model_name")
     if not hf_model_name:
         raise SystemExit("no --hf-model-name, and the fit config has none")
@@ -311,7 +401,7 @@ def main() -> None:
         "n_prompts": int(config.get("num_prompts_trained_on", 0)),
         "provenance": {
             "source": args.source,
-            "method": "jpp",
+            "method": args.method,
             "lrp_mode": config.get("lrp_mode"),
             "source_config": json.loads(json.dumps(config, default=str)),
             **capture,
@@ -321,11 +411,11 @@ def main() -> None:
     out_dir = (
         Path(args.out_dir).expanduser().resolve()
         / args.np_model_id
-        / "jpp"
+        / method_dir
         / args.dataset_dir
     )
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{_slug(hf_model_name)}_jpp_lens.pt"
+    out_path = out_dir / f"{_slug(hf_model_name)}{file_suffix}"
     # Temp-then-rename, so a stopped save leaves no short file at the real path.
     tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
     print(f"\n== writing {out_path} ==")

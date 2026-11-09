@@ -83,12 +83,18 @@ export async function importConfigFromS3() {
   }
 }
 
+// Postgres text cannot hold \u0000. Match only a real escape: an even number of backslashes before
+// it means the text was a literal backslash followed by "u0000".
+const JSON_NULL_ESCAPE = /(?<!\\)((?:\\\\)*)\\u0000/g;
+
+export function dropJsonNulls(jsonlData: string): string {
+  return jsonlData.replace(JSON_NULL_ESCAPE, '$1 ');
+}
+
 export async function importJsonlString(tableName: string, jsonlData: string) {
   let pool;
   let client;
-  // replace all \u0000 with ' ' because it's not supported by postgres
-
-  jsonlData = jsonlData.replaceAll('\\u0000', ' ');
+  jsonlData = dropJsonNulls(jsonlData);
   if (tableName === 'Activation') {
     const activationLines = jsonlData
       .trim()
@@ -128,7 +134,7 @@ export async function importJsonlString(tableName: string, jsonlData: string) {
           WHEN data_type = 'ARRAY' THEN 
             udt_name::regtype::text || '[]'
           WHEN data_type = 'USER-DEFINED' THEN (
-            SELECT t.typname::text
+            SELECT quote_ident(t.typname::text)
             FROM pg_type t
             WHERE t.typname = c.udt_name
           )
