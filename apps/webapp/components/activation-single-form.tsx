@@ -1,7 +1,11 @@
 'use client';
 
 import ActivationItem from '@/components/activation-item';
+import ImageInput, { useImageInputSupported } from '@/components/inference-searcher/image-input';
+import ImagePatchGrid from '@/components/inference-searcher/image-patch-grid';
 import { useGlobalContext } from '@/components/provider/global-provider';
+import type { ActivationImage } from '@/lib/api/inference-types';
+import { collapseImageTokens, patchLabel } from '@/lib/utils/image-prompt';
 import { getSourceSetNameFromSource, isNeuronLayerSource } from '@/lib/utils/source';
 import { Activation } from '@prisma/client';
 import { MagnifyingGlassIcon } from '@radix-ui/react-icons';
@@ -30,6 +34,9 @@ function formatPeakValue(value: number) {
   }
   return value.toFixed(2);
 }
+// A custom test result, with the image block when the prompt carried an image.
+type TestResult = Activation & { image?: ActivationImage };
+
 const HIDE_STEER_MODELS: string[] = []; // 'gpt-oss-20b'
 const HIDE_STEER_MODELS_PREFIX = ['gemma-3-'];
 
@@ -68,7 +75,13 @@ export default function ActivationSingleForm({
   } = useGlobalContext();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [customText, setCustomText] = useState('');
-  const [activationResult, setActivationResult] = useState<Activation | undefined>();
+  const [activationResult, setActivationResult] = useState<TestResult | undefined>();
+  // Image prompts, when the model's inference host takes them; `resultImage` is the image the
+  // shown result ran with.
+  const imageInputSupported = useImageInputSupported(neuron.modelId);
+  const [image, setImage] = useState<string | undefined>(undefined);
+  const [resultImage, setResultImage] = useState<string | undefined>(undefined);
+  const activeImage = imageInputSupported && !embed ? image : undefined;
   const [copyClicked, setCopyClicked] = useState(false);
   const resultScrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -81,11 +94,12 @@ export default function ActivationSingleForm({
 
   const testClicked = (text: string) => {
     setIsSubmitting(true);
-    if (text.trim().length === 0) {
+    if (text.trim().length === 0 && !activeImage) {
       alert('Please enter some text.');
       setIsSubmitting(false);
       return;
     }
+    const imageSent = activeImage;
 
     fetch(`/api/activation/new`, {
       method: 'POST',
@@ -94,6 +108,7 @@ export default function ActivationSingleForm({
         customText: text,
         neuron,
         ignoreBos: hideBos,
+        ...(imageSent ? { imageBase64: imageSent } : {}),
       }),
     })
       .then(async (response) => {
@@ -112,10 +127,14 @@ export default function ActivationSingleForm({
           // `ignoreBos` is applied server-side, so nothing to post-process here.
           const actToSet = newActivation;
           setActivationResult(actToSet);
-          const currentUrl = new URL(window.location.href);
-          currentUrl.searchParams.set('defaulttesttext', actToSet.tokens.join(''));
-          const url = currentUrl.toString();
-          window.history.pushState({}, '', url);
+          setResultImage(imageSent);
+          // An image cannot travel in a URL, so only a text-only result is shareable this way.
+          if (!imageSent) {
+            const currentUrl = new URL(window.location.href);
+            currentUrl.searchParams.set('defaulttesttext', actToSet.tokens.join(''));
+            const url = currentUrl.toString();
+            window.history.pushState({}, '', url);
+          }
           if (callback) {
             callback(actToSet);
           }
@@ -148,6 +167,32 @@ export default function ActivationSingleForm({
   }
 
   const resultPeak = activationResult ? peakOfResult(activationResult) : undefined;
+  // With an image, its patch tokens collapse into one token in the text view and get a heatmap.
+  const resultImageInfo = resultImage ? activationResult?.image : undefined;
+  const imagePositions = resultImageInfo?.tokenPositions ?? [];
+  const textView =
+    activationResult && resultImageInfo
+      ? collapseImageTokens(activationResult.tokens, activationResult.values, imagePositions)
+      : undefined;
+  const shownActivation: Activation | undefined =
+    activationResult && textView
+      ? {
+          ...activationResult,
+          tokens: textView.tokens,
+          values: textView.values,
+          maxValueTokenIndex: Math.max(
+            0,
+            imagePositions.includes(activationResult.maxValueTokenIndex)
+              ? textView.imageIndex
+              : textView.originalIndex.indexOf(activationResult.maxValueTokenIndex),
+          ),
+        }
+      : activationResult;
+  const peakLabel =
+    activationResult && resultPeak
+      ? (patchLabel(resultPeak.tokenIndex, imagePositions, resultImageInfo?.gridCols) ??
+        activationResult.tokens[resultPeak.tokenIndex])
+      : '';
 
   // Scroll the result box (not the page) so that the peak token is in the middle.
   useEffect(() => {
@@ -174,6 +219,7 @@ export default function ActivationSingleForm({
       <div className="flex w-full flex-col pb-1.5 pt-1.5 sm:pb-2 sm:pt-3">
         {!hideTestField && (
           <div className="flex w-full flex-row gap-x-1.5">
+            {imageInputSupported && !embed && <ImageInput image={image} onChange={setImage} disabled={isSubmitting} />}
             <div className="flex flex-1 flex-row gap-0 overflow-hidden rounded border border-sky-800">
               <label
                 htmlFor="customText"
@@ -183,7 +229,7 @@ export default function ActivationSingleForm({
                 <ReactTextareaAutosize
                   id="customText"
                   name="customText"
-                  required
+                  required={!activeImage}
                   value={customText}
                   minRows={1}
                   maxRows={5}
@@ -257,11 +303,7 @@ export default function ActivationSingleForm({
             <div className="flex w-full flex-row pb-0.5 pt-1 sm:pb-1 sm:pt-2">
               <div className="hidden max-h-72 shrink-0 flex-col items-center justify-center overflow-y-scroll text-center sm:flex">
                 <div className="px-5 font-mono text-[10px] font-medium text-slate-500">
-                  {activationResult.tokens !== undefined ? (
-                    <span>{activationResult.tokens[resultPeak?.tokenIndex ?? 0]}</span>
-                  ) : (
-                    ''
-                  )}
+                  {activationResult.tokens !== undefined ? <span>{peakLabel}</span> : ''}
                 </div>
                 <div
                   className={`px-5 font-mono text-[10px] font-bold ${resultPeak?.negative ? 'text-rose-600' : ''}`}
@@ -272,7 +314,7 @@ export default function ActivationSingleForm({
               </div>
               <div ref={resultScrollRef} className="max-h-72 flex-auto overflow-y-scroll px-3 text-sm sm:px-0">
                 <ActivationItem
-                  activation={activationResult}
+                  activation={shownActivation ?? activationResult}
                   overallMaxActivationValueInList={
                     overallMaxValue === -100 ? activationResult.maxValue : overallMaxValue
                   }
@@ -282,6 +324,18 @@ export default function ActivationSingleForm({
                   dfa={getSourceSet(neuron.modelId, neuron.sourceSetName || '')?.showDfa}
                 />
               </div>
+              {resultImage && resultImageInfo && (
+                <div className="ml-3 shrink-0">
+                  <ImagePatchGrid
+                    imageSrc={resultImage}
+                    rows={resultImageInfo.gridRows}
+                    cols={resultImageInfo.gridCols}
+                    positions={imagePositions}
+                    values={activationResult.values}
+                    sizePx={144}
+                  />
+                </div>
+              )}
               {!embed && (
                 <div className="ml-3 mt-0 flex shrink-0 flex-col items-center justify-start gap-y-1.5 py-1">
                   <button
@@ -290,6 +344,7 @@ export default function ActivationSingleForm({
                     title="Clear Result"
                     onClick={() => {
                       setActivationResult(undefined);
+                      setResultImage(undefined);
                       setCustomText('');
                       const url = `${window.location.origin}/${neuron.modelId}/${neuron.layer}/${neuron.index}`;
                       window.history.pushState({}, '', url);
@@ -297,8 +352,9 @@ export default function ActivationSingleForm({
                   >
                     <XIcon className="h-3 w-3" /> Reset
                   </button>
-                  {/* TopK search ranks SAE latents; MLP neuron layers have none */}
-                  {!isNeuronLayerSource(neuron.layer) && (
+                  {/* TopK search ranks SAE latents; MLP neuron layers have none. Neither it nor Share
+                      can carry an image, which does not fit in a URL. */}
+                  {!isNeuronLayerSource(neuron.layer) && !resultImage && (
                     <button
                       type="button"
                       className="flex w-[62px] cursor-pointer flex-row items-center justify-center gap-x-0.5 whitespace-pre rounded bg-slate-200 px-1.5 py-1.5 text-[9px] font-medium text-slate-600 hover:bg-slate-300 sm:px-2 sm:py-1.5 sm:text-[10.5px]"
@@ -314,39 +370,41 @@ export default function ActivationSingleForm({
                       <MagnifyingGlassIcon className="h-3 w-3" /> TopK
                     </button>
                   )}
-                  <button
-                    type="button"
-                    className="flex w-[62px] cursor-pointer flex-row items-center justify-center gap-x-0.5 whitespace-pre rounded bg-slate-200 px-1.5 py-1.5 text-[9px] font-medium text-slate-600 hover:bg-slate-300 sm:px-2 sm:py-1.5 sm:text-[10.5px]"
-                    title="Share Custom Activation Test Result"
-                    onClick={() => {
-                      const url = `${window.location.origin}/${neuron.modelId}/${neuron.layer}/${
-                        neuron.index
-                      }?defaulttesttext=${encodeURIComponent(activationResult.tokens.join(''))}`;
-                      copy(url);
-                      setCopyClicked(true);
-                      showToastMessage(
-                        <div className="flex flex-col items-center justify-center gap-y-1">
-                          <div className="flex flex-row items-center justify-center gap-x-1 font-semibold">
-                            <Copy className="h-4 w-4" /> Copied!
-                          </div>
-                          <div className="mt-1 text-xs">
-                            The link to this feature, including this activation result, has been copied to your
-                            clipboard.
-                          </div>
-                        </div>,
-                      );
-                    }}
-                  >
-                    {copyClicked ? (
-                      <>
-                        <Check className="h-3 w-3" /> Copied
-                      </>
-                    ) : (
-                      <>
-                        <Share className="h-3 w-3" /> Share
-                      </>
-                    )}
-                  </button>
+                  {!resultImage && (
+                    <button
+                      type="button"
+                      className="flex w-[62px] cursor-pointer flex-row items-center justify-center gap-x-0.5 whitespace-pre rounded bg-slate-200 px-1.5 py-1.5 text-[9px] font-medium text-slate-600 hover:bg-slate-300 sm:px-2 sm:py-1.5 sm:text-[10.5px]"
+                      title="Share Custom Activation Test Result"
+                      onClick={() => {
+                        const url = `${window.location.origin}/${neuron.modelId}/${neuron.layer}/${
+                          neuron.index
+                        }?defaulttesttext=${encodeURIComponent(activationResult.tokens.join(''))}`;
+                        copy(url);
+                        setCopyClicked(true);
+                        showToastMessage(
+                          <div className="flex flex-col items-center justify-center gap-y-1">
+                            <div className="flex flex-row items-center justify-center gap-x-1 font-semibold">
+                              <Copy className="h-4 w-4" /> Copied!
+                            </div>
+                            <div className="mt-1 text-xs">
+                              The link to this feature, including this activation result, has been copied to your
+                              clipboard.
+                            </div>
+                          </div>,
+                        );
+                      }}
+                    >
+                      {copyClicked ? (
+                        <>
+                          <Check className="h-3 w-3" /> Copied
+                        </>
+                      ) : (
+                        <>
+                          <Share className="h-3 w-3" /> Share
+                        </>
+                      )}
+                    </button>
+                  )}
                 </div>
               )}
             </div>

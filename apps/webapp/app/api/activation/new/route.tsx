@@ -1,6 +1,7 @@
+import { badRequest } from '@/lib/api-error';
 import { prisma } from '@/lib/db';
 import { assertUserCanAccessModelAndSourceSet } from '@/lib/db/userCanAccess';
-import { getActivationForFeature } from '@/lib/utils/inference';
+import { getActivationForFeature, InferenceImageInput } from '@/lib/utils/inference';
 import { getSourceSetNameFromSource } from '@/lib/utils/source';
 import { RequestOptionalUser, withOptionalUser } from '@/lib/with-user';
 import { NextResponse } from 'next/server';
@@ -54,6 +55,9 @@ import { NextResponse } from 'next/server';
  *                 type: boolean
  *                 description: When true, omits the leading beginning-of-sequence token (and its activation value) from the result.
  *                 default: false
+ *               imageBase64:
+ *                 type: string
+ *                 description: Optional. A base64 image (bare or a data URL) for a vision-language model whose inference host takes images. The prompt is then chat-formatted with the image first and `customText` may be empty. Single prompts and SAE features or neurons only. The response then carries an `image` object with the image's token positions.
  *     responses:
  *       200:
  *         description: Successful response, with activation data
@@ -132,7 +136,18 @@ export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
   if (!neuron.modelId || (!neuron.layer && !neuron.source) || !neuron.index) {
     throw new Error('Invalid feature.');
   }
-  if (!body.customText) {
+  if (body.imageBase64 !== undefined && (typeof body.imageBase64 !== 'string' || body.imageBase64 === '')) {
+    throw badRequest('imageBase64 must be a non-empty base64 string.');
+  }
+  const image: InferenceImageInput | undefined = body.imageBase64 ? { imageBase64: body.imageBase64 } : undefined;
+  if (image && Array.isArray(body.customText)) {
+    throw badRequest('An image can only be tested with a single prompt, not a batch.');
+  }
+  // With an image the text is optional: the image alone is a valid prompt.
+  if (image && (body.customText === undefined || body.customText === null)) {
+    body.customText = '';
+  }
+  if (!image && !body.customText) {
     throw new Error('Missing custom text.');
   }
 
@@ -185,7 +200,13 @@ export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
     );
   }
 
-  const activation = await getActivationForFeature(neuron, body.customText, request.user, body.ignoreBos === true);
+  const activation = await getActivationForFeature(
+    neuron,
+    body.customText,
+    request.user,
+    body.ignoreBos === true,
+    image,
+  );
 
   return NextResponse.json(activation);
 });

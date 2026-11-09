@@ -479,9 +479,14 @@ export const getActivationForFeature = async (
   // When true, strip the leading BOS token from the result (see
   // `dropBosFromActivation`). Used by the Gemma Scope demo surfaces.
   ignoreBos = false,
+  // An image for a vision-language model. Single prompts and SAE features/neurons only.
+  image: InferenceImageInput | undefined = undefined,
 ) => {
   if (!feature.modelId || !feature.layer || !feature.index) {
     throw new Error('Invalid feature');
+  }
+  if (image && Array.isArray(defaultTestText)) {
+    throw new InferenceServerError(400, 'An image can only be tested with a single prompt, not a batch.');
   }
 
   // Inference failures here name a model internal and nothing else — "hook
@@ -569,6 +574,7 @@ export const getActivationForFeature = async (
             model: transformerLensModelId,
             source: feature.layer,
             index: feature.index,
+            imageBase64: image?.imageBase64,
           },
     }),
   )
@@ -592,6 +598,11 @@ export const getActivationForFeature = async (
         dfaTargetIndex: result.activation.dfaTargetIndex ?? undefined,
         dfaMaxValue: result.activation.dfaMaxValue ?? undefined,
       };
+      if (result.image) {
+        // The server already dropped the BOS and indexed `image` against the tokens it returned,
+        // so trimming here would shift every image position by one.
+        return { ...activation, image: result.image };
+      }
       return ignoreBos ? dropBosFromActivation(activation, result.tokensIsSpecial) : activation;
     })
     .catch((error) => {
