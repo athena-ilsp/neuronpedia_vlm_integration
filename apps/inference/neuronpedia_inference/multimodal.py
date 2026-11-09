@@ -90,6 +90,17 @@ class ImagePrompt:
         return [i for i in range(len(self.str_tokens)) if i not in content]
 
 
+def image_input_available(model: InterpModel) -> bool:
+    """Whether this instance can take image prompts: the eager backend on a checkpoint with a vision tower.
+
+    Read off the model config (``vision_config``), so it is cheap and loads no processor. Reported
+    by ``/capabilities`` for the webapp to show its image controls.
+    """
+    if not isinstance(model, EagerModel):
+        return False
+    return getattr(model.hf_model.config, "vision_config", None) is not None
+
+
 def decode_image(image_base64: str) -> Image.Image:
     """Decode a base64 image (a bare string or a ``data:image/...;base64,`` URL) to RGB."""
     payload = image_base64.split(",", 1)[1] if image_base64.startswith("data:") else image_base64

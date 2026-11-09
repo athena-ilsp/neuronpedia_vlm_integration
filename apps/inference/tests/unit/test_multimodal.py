@@ -12,7 +12,7 @@ from typing import cast
 
 import pytest
 import torch
-from interp_engine import InterpModel
+from interp_engine import EagerModel, InterpModel
 from PIL import Image
 
 from neuronpedia_inference import multimodal
@@ -124,6 +124,19 @@ def test_activation_image_reindexes_for_a_response_that_dropped_the_bos():
     assert shifted.token_positions == [4, 5]
     # The dropped BOS (position 0) is gone rather than turned into -1.
     assert shifted.template_token_positions == [0, 1, 2, 3, 6, 7, 10]
+
+
+def _eager_with_config(config: SimpleNamespace) -> EagerModel:
+    """An EagerModel shell carrying only an HF config: what image_input_available reads."""
+    model = EagerModel.__new__(EagerModel)
+    model.hf_model = SimpleNamespace(config=config)  # pyright: ignore[reportAttributeAccessIssue]
+    return model
+
+
+def test_image_input_is_advertised_only_for_an_eager_model_with_a_vision_tower():
+    assert multimodal.image_input_available(_eager_with_config(SimpleNamespace(vision_config={"x": 1})))
+    assert not multimodal.image_input_available(_eager_with_config(SimpleNamespace()))
+    assert not multimodal.image_input_available(cast(InterpModel, _NotEager()))
 
 
 def test_build_image_prompt_refuses_off_the_eager_backend_before_decoding():

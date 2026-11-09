@@ -17,6 +17,7 @@ from neuronpedia_inference.endpoints.activation.all import MAX_NUM_RESULTS
 from neuronpedia_inference.endpoints.lens.lens_loader import JacobianLensStore, JppLensStore
 from neuronpedia_inference.endpoints.lens.residual_spec import block_output_point
 from neuronpedia_inference.engine_adapter import BackendUnsupported, assert_residual_available
+from neuronpedia_inference.multimodal import image_input_available
 from neuronpedia_inference.sae_cache import sae_cache
 from neuronpedia_inference.sae_manager import SAEManager
 from neuronpedia_inference.shared import Model, budget, limiter
@@ -109,6 +110,9 @@ async def capabilities():
         "frozen_points": [str(a) for a in described.static_points],
         "writes_available": [str(a) for a in described.static_writes],
         "generation_only": config.generation_only,
+        # Image + text prompts (`imageBase64` on /activation/all and /activation/single): the eager
+        # backend on a checkpoint with a vision tower. The webapp shows its image controls on this.
+        "image_input": can_capture and image_input_available(model),
         # Layers /activation/raw will return when the request does not name any.
         "num_layers": config.num_layers,
         # Empty on a pod started with no SAE sets, where only the model-only endpoints below
