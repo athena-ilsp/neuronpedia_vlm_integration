@@ -130,6 +130,26 @@ class ActivationAllFeature(BaseSchema):
     ranked_by_lowest: StrictBool | None = Field(default=None, description=RANKED_BY_LOWEST_DESCRIPTION)
 
 
+IMAGE_BASE64_DESCRIPTION = (
+    "Optional. A base64 image (a bare string or a data URL) for a vision-language model. With an image, "
+    "the prompt becomes one chat user turn, image first, rendered by the model's own chat template; "
+    "text-only requests keep the raw prompt. Needs the eager backend."
+)
+
+
+class ActivationImage(BaseSchema):
+    """Where an input image landed in the tokenized prompt."""
+
+    image_token: StrictStr = Field(description="The placeholder token every image position carries.")
+    token_positions: list[StrictInt] = Field(description="Indices into `tokens` of the image positions, in order.")
+    grid_rows: StrictInt | None = Field(
+        default=None, description="Rows of the patch grid the image positions tile (row-major), when known."
+    )
+    grid_cols: StrictInt | None = Field(
+        default=None, description="Columns of the patch grid the image positions tile (row-major), when known."
+    )
+
+
 class ActivationAllRequest(BaseSchema):
     """
     For a given prompt, get the top activating features for a set of SAEs (eg gemmascope-res-65k), or specific SAEs in the set of SAEs (eg 0-gemmascope-res-65k, 5-gemmascope-res-65k). Also has other customization options.
@@ -149,6 +169,7 @@ class ActivationAllRequest(BaseSchema):
     )
     num_results: StrictInt | None = Field(default=25, description="Optional. The number of top features to return.")
     rank_by_percentile: StrictBool = Field(default=False, description=RANK_BY_PERCENTILE_DESCRIPTION)
+    image_base64: StrictStr | None = Field(default=None, description=IMAGE_BASE64_DESCRIPTION)
 
 
 class ActivationAllResponse(BaseSchema):
@@ -161,6 +182,9 @@ class ActivationAllResponse(BaseSchema):
     counts: list[list[StrictFloat]] | None = Field(
         default=None,
         description="Not currently supported and may be incorrect. This is the number of features that activated by layer, starting from layer 0 of this SAE. Need to be redesigned.",
+    )
+    image: ActivationImage | None = Field(
+        default=None, description="Present when the request carried an image: where its tokens are."
     )
 
 

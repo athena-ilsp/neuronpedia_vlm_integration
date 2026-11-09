@@ -28,6 +28,9 @@ dependencies = [
   # Read for each published artifact's vector.yaml manifest. Declared explicitly rather
   # than leaned on transitively (it arrives via several deps today).
   "pyyaml>=6.0",
+  # Decodes request images for vision-language models (multimodal.py). Declared explicitly
+  # rather than leaned on transitively (it arrives via torchvision/transformers today).
+  "pillow>=11",
   "sae-lens>=6.30.0",
   "fastapi>=0.133.0,<0.137.0",
   "uvicorn>=0.34.0",

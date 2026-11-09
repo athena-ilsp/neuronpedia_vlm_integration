@@ -508,6 +508,11 @@ export interface components {
        */
       ignoreBos: boolean;
       /**
+       * Imagebase64
+       * @description Optional. A base64 image (a bare string or a data URL) for a vision-language model. With an image, the prompt becomes one chat user turn, image first, rendered by the model's own chat template; text-only requests keep the raw prompt. Needs the eager backend.
+       */
+      imageBase64?: string | null;
+      /**
        * Model
        * @description Name of the model to test activations on
        */
@@ -557,6 +562,8 @@ export interface components {
        * @description Not currently supported and may be incorrect. This is the number of features that activated by layer, starting from layer 0 of this SAE. Need to be redesigned.
        */
       counts?: number[][] | null;
+      /** @description Present when the request carried an image: where its tokens are. */
+      image?: components['schemas']['ActivationImage'] | null;
       /** Tokens */
       tokens: string[];
     };
@@ -592,6 +599,32 @@ export interface components {
       seqLen: number;
       /** Tokens */
       tokens: string[];
+    };
+    /**
+     * ActivationImage
+     * @description Where an input image landed in the tokenized prompt.
+     */
+    ActivationImage: {
+      /**
+       * Gridcols
+       * @description Columns of the patch grid the image positions tile (row-major), when known.
+       */
+      gridCols?: number | null;
+      /**
+       * Gridrows
+       * @description Rows of the patch grid the image positions tile (row-major), when known.
+       */
+      gridRows?: number | null;
+      /**
+       * Imagetoken
+       * @description The placeholder token every image position carries.
+       */
+      imageToken: string;
+      /**
+       * Tokenpositions
+       * @description Indices into `tokens` of the image positions, in order.
+       */
+      tokenPositions: number[];
     };
     /**
      * ActivationRawLayer

@@ -32,6 +32,7 @@ routing it through both capture paths and refusing a model whose norms are not R
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, NamedTuple, TypedDict, cast
 
 import einops
@@ -573,19 +574,33 @@ async def _capture_one(
 
 
 async def capture_cache_async(
-    model: InterpModel, tokens: torch.Tensor, hook_names: list[str]
+    model: InterpModel,
+    tokens: torch.Tensor,
+    hook_names: list[str],
+    forward_kwargs: Mapping[str, torch.Tensor] | None = None,
 ) -> dict[str, torch.Tensor]:
     """Capture -> ``{hook_name: tensor[1, seq, d]}`` on whichever backend is loaded.
 
     Eager captures in-process via ``run_with_cache``; every other backend goes through the
     protocol's ``capture`` (see :func:`_capture_one`). The returned dict matches exactly what the
     existing ``process_*_activations`` helpers consume, so endpoints stay backend-agnostic.
+
+    ``forward_kwargs`` are extra inputs to the model's forward that are not tokens -- an image's
+    ``pixel_values`` and friends, built by :mod:`neuronpedia_inference.multimodal`. Only the eager
+    backend can take them; any other refuses with :class:`BackendUnsupported`.
     """
     points = _capture_points(hook_names)
     if isinstance(model, EagerModel):
-        cache = run_with_cache(model, _as_batched(tokens), [point.address for point in points])
+        # Passed only when there is something to pass: `forward_kwargs` is newer than the engine
+        # release this app pins, so a text-only request must not depend on the engine taking it.
+        extra: dict[str, Any] = {"forward_kwargs": forward_kwargs} if forward_kwargs else {}
+        cache = run_with_cache(model, _as_batched(tokens), [point.address for point in points], **extra)
         return {point.hook: _finish(point, cache[point.address], model) for point in points}
 
+    if forward_kwargs:
+        raise BackendUnsupported(
+            f"Image (multimodal) input needs the eager backend, and this instance runs {backend_name(model)}."
+        )
     raw = await _capture_one(model, _as_batched(tokens)[0].tolist(), points)
     return {point.hook: _finish(point, raw[point.address].unsqueeze(0), model) for point in points}
 

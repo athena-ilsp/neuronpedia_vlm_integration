@@ -21,11 +21,13 @@ from neuronpedia_inference.inference_utils.neuron_act_range import (
     neuron_rarity,
 )
 from neuronpedia_inference.memory_cost import activation_all_cost
+from neuronpedia_inference.multimodal import ImagePrompt, MultimodalInputError, build_image_prompt
 from neuronpedia_inference.sae_manager import SAEManager
 from neuronpedia_inference.schemas import (
     ActivationAllFeature,
     ActivationAllRequest,
     ActivationAllResponse,
+    ActivationImage,
 )
 from neuronpedia_inference.shared import (
     LoadedModel,
@@ -99,9 +101,10 @@ async def activation_all(
     if len(request.selected_sources) == 0:
         request.selected_sources = sae_manager.sae_set_to_saes[request.source_set]
 
-    # if the request doesn't start with the bos, prepend it
+    # if the request doesn't start with the bos, prepend it. An image prompt is chat-formatted by
+    # the processor, whose template carries the BOS itself.
     bos_token = Model.get_instance().tokenizer.bos_token
-    if bos_token and not request.prompt.startswith(bos_token):
+    if request.image_base64 is None and bos_token and not request.prompt.startswith(bos_token):
         request.prompt = bos_token + request.prompt
 
     # # Removed this check because our SAE manager will just load and unload as needed (though it will be a little slower)
@@ -126,7 +129,7 @@ async def activation_all(
         logger.info("Activations result processed successfully")
 
         return result
-    except (BackendUnsupported, NeuronActRangeError) as e:
+    except (BackendUnsupported, MultimodalInputError, NeuronActRangeError) as e:
         return JSONResponse(content={"error": str(e)}, status_code=400)
     except Exception as e:
         # An allocation OOM here is retryable and does not poison the CUDA context, so it
@@ -148,6 +151,8 @@ class ActivationProcessor:
     def __init__(self) -> None:
         # Per-request memo of engine value+attn_probs caches, keyed by layer (DFA reuse).
         self._dfa_cache: dict[int, DfaInputs] = {}
+        # Set when the request carries an image; DFA has no image path yet and refuses it.
+        self._image_prompt: ImagePrompt | None = None
 
     async def process_activations(self, request: ActivationAllRequest) -> ActivationAllResponse:
         model = Model.get_instance()
@@ -158,7 +163,7 @@ class ActivationProcessor:
         prepend_bos = False
         # if the prompt doesn't start with the bos, prepend it
         bos_token = model.tokenizer.bos_token
-        if bos_token and not request.prompt.startswith(bos_token):
+        if request.image_base64 is None and bos_token and not request.prompt.startswith(bos_token):
             request.prompt = bos_token + request.prompt
 
         tokens, str_tokens, cache = await self._tokenize_and_get_cache(request.prompt, prepend_bos, request)
@@ -177,9 +182,18 @@ class ActivationProcessor:
         # The schema's optional `counts` (a [layer, token] histogram) is intentionally left
         # unset: no client reads it, and filling it costs a full pass over every source's
         # [d_sae, n_tokens] block plus a layers x tokens array in the payload.
+        image = self._image_prompt
         return ActivationAllResponse(
             activations=feature_activations,
             tokens=str_tokens,
+            image=None
+            if image is None
+            else ActivationImage(
+                image_token=image.image_token,
+                token_positions=image.image_token_positions,
+                grid_rows=image.grid_rows,
+                grid_cols=image.grid_cols,
+            ),
         )
 
     async def _tokenize_and_get_cache(
@@ -193,15 +207,21 @@ class ActivationProcessor:
         config = Config.get_instance()
         sae_manager = SAEManager.get_instance()
 
-        tokens = model.to_tokens(
-            text,
-            prepend_bos=prepend_bos,
-            truncate=False,
-        )[0]
+        forward_kwargs: dict[str, torch.Tensor] | None = None
+        if request.image_base64 is not None:
+            self._image_prompt = build_image_prompt(model, text, request.image_base64)
+            tokens = self._image_prompt.tokens
+            str_tokens = self._image_prompt.str_tokens
+            forward_kwargs = self._image_prompt.forward_kwargs
+        else:
+            tokens = model.to_tokens(
+                text,
+                prepend_bos=prepend_bos,
+                truncate=False,
+            )[0]
+            str_tokens = model.to_str_tokens(text, prepend_bos=prepend_bos)
         if len(tokens) > config.activation_token_limit:
             raise ValueError(f"Text too long: {len(tokens)} tokens, max is {config.activation_token_limit}")
-
-        str_tokens = model.to_str_tokens(text, prepend_bos=prepend_bos)
 
         # Ensure each selected source has metadata (hook/type) before capture: get_sae_hook
         # alone does not load, so a source missing from the startup set would otherwise hand
@@ -213,7 +233,7 @@ class ActivationProcessor:
 
         # Capture only the hook points the selected sources need (backend-aware).
         hook_names = list(dict.fromkeys(sae_manager.get_sae_hook(s) for s in request.selected_sources))
-        cache = await capture_cache_async(model, tokens, hook_names)
+        cache = await capture_cache_async(model, tokens, hook_names, forward_kwargs)
         return tokens, str_tokens, cache
 
     def _stream_top_activations(
@@ -419,6 +439,8 @@ class ActivationProcessor:
 
     async def _dfa_layer_cache(self, model: LoadedModel, tokens: torch.Tensor, layer_num: int):
         """Memoized backend-aware (value, attn_probs, dims) for a layer (reused across features)."""
+        if self._image_prompt is not None:
+            raise BackendUnsupported("DFA is not available for image prompts yet.")
         cached = self._dfa_cache.get(layer_num)
         if cached is None:
             cached = await capture_dfa_inputs(model, tokens, layer_num)

@@ -259,6 +259,17 @@ def test_estimate_tokens_never_underestimates_and_respects_the_limit():
     assert estimate_tokens(None) == 1
 
 
+def test_an_image_request_is_costed_at_the_token_limit():
+    """An image expands into placeholder tokens the prompt text does not show, so its cost cannot
+    come from the text length; the limit the expanded prompt is checked against bounds it."""
+    with_image = activation_all_cost(_all_request(prompt="hi", image_base64="aGk="))
+    longest_text = activation_all_cost(_all_request(prompt="x" * 100_000))
+    short_text = activation_all_cost(_all_request(prompt="hi"))
+
+    assert with_image == longest_text
+    assert with_image > short_text
+
+
 def test_an_unknown_source_falls_back_to_something_expensive():
     """An unrecorded source (a `neurons` source) must not be costed as free."""
     known = activation_single_cost(SimpleNamespace(source=NARROW_SOURCES[0], prompt="a prompt"))

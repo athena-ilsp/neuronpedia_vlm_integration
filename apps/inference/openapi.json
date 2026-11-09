@@ -238,6 +238,18 @@
             "title": "Ignorebos",
             "type": "boolean"
           },
+          "imageBase64": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional. A base64 image (a bare string or a data URL) for a vision-language model. With an image, the prompt becomes one chat user turn, image first, rendered by the model's own chat template; text-only requests keep the raw prompt. Needs the eager backend.",
+            "title": "Imagebase64"
+          },
           "model": {
             "description": "Name of the model to test activations on",
             "title": "Model",
@@ -328,6 +340,17 @@
             "description": "Not currently supported and may be incorrect. This is the number of features that activated by layer, starting from layer 0 of this SAE. Need to be redesigned.",
             "title": "Counts"
           },
+          "image": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActivationImage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present when the request carried an image: where its tokens are."
+          },
           "tokens": {
             "items": {
               "type": "string"
@@ -413,6 +436,54 @@
           "tokens"
         ],
         "title": "ActivationAttentionResponse",
+        "type": "object"
+      },
+      "ActivationImage": {
+        "description": "Where an input image landed in the tokenized prompt.",
+        "properties": {
+          "gridCols": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Columns of the patch grid the image positions tile (row-major), when known.",
+            "title": "Gridcols"
+          },
+          "gridRows": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Rows of the patch grid the image positions tile (row-major), when known.",
+            "title": "Gridrows"
+          },
+          "imageToken": {
+            "description": "The placeholder token every image position carries.",
+            "title": "Imagetoken",
+            "type": "string"
+          },
+          "tokenPositions": {
+            "description": "Indices into `tokens` of the image positions, in order.",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Tokenpositions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "imageToken",
+          "tokenPositions"
+        ],
+        "title": "ActivationImage",
         "type": "object"
       },
       "ActivationRawLayer": {

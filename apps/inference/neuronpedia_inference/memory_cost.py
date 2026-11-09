@@ -191,6 +191,20 @@ def estimate_tokens(text: str | None) -> int:
     return max(1, min(int(limit), len(text)))
 
 
+def estimate_request_tokens(request) -> int:  # type: ignore[no-untyped-def]
+    """Upper bound on a single-prompt request's token count, image included.
+
+    An image expands into placeholder tokens whose count only the processor knows (256 on Gemma 3,
+    image-size dependent on Qwen-VL), and the prompt is checked against the activation token
+    limit after expansion. So the limit itself is the bound for an image request: never low,
+    and computable before the image is decoded.
+    """
+    if getattr(request, "image_base64", None):
+        config = Config.get_instance()
+        return max(1, int(getattr(config, "activation_token_limit", None) or config.token_limit))
+    return estimate_tokens(getattr(request, "prompt", None))
+
+
 def _widest_source_dims(sources: list[str]) -> tuple[int, int]:
     """(widest d_sae, widest d_in) over `sources`.
 
@@ -242,7 +256,7 @@ def activation_all_cost(request) -> int:  # type: ignore[no-untyped-def]
     each of them at once.
     """
     sources = _selected_sources(request)
-    n_tokens = estimate_tokens(getattr(request, "prompt", None))
+    n_tokens = estimate_request_tokens(request)
     d_sae, _ = _widest_source_dims(sources)
     num_results = max(1, int(getattr(request, "num_results", 1) or 1))
 
