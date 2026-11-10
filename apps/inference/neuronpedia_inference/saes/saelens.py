@@ -1,8 +1,10 @@
 import logging
+from pathlib import Path
 from typing import Any
 
 from sae_lens.saes.sae import SAE
 
+from neuronpedia_inference.config import is_local_release
 from neuronpedia_inference.saes.base import BaseSAE
 
 logger = logging.getLogger(__name__)
@@ -12,12 +14,16 @@ class SaeLensSAE(BaseSAE):
     @staticmethod
     def load(release: str, sae_id: str, device: str, dtype: str) -> tuple[Any, str]:
         # load to cpu first, then GPU - this reduces fragmentation of the GPU memory (saves memory)
-        loaded_sae = SAE.from_pretrained(
-            release=release,
-            sae_id=sae_id,
-            device="cpu",
-            dtype=dtype,
-        )
+        if is_local_release(release):
+            # A local release (extra_saes.local.yaml): `sae_id` is a SAELens folder inside it.
+            loaded_sae = SAE.load_from_disk(str(Path(release) / sae_id), device="cpu", dtype=dtype)
+        else:
+            loaded_sae = SAE.from_pretrained(
+                release=release,
+                sae_id=sae_id,
+                device="cpu",
+                dtype=dtype,
+            )
         loaded_sae.to(device)
         # Attention-output SAEs (`hook_z`: gpt2 att-kk, gemma-2 gemmascope-att) come out of
         # SAELens with input reshaping ON, which folds the last two dims of the input

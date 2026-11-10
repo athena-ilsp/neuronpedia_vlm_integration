@@ -249,6 +249,39 @@ class TestExtraSaesRegistry:
         with pytest.raises(ValueError, match="also in SAELens"):
             extra_saes_directory_rows(get_saelens_neuronpedia_directory_df(), path)
 
+    def test_the_local_registry_adds_rows_and_may_name_a_local_directory(self, tmp_path: Path):
+        saelens_df = get_saelens_neuronpedia_directory_df()
+        export = tmp_path / "export"
+        export.mkdir()
+        committed = write_registry(tmp_path, {})
+        local_path = tmp_path / "extra_saes.local.yaml"
+        local_path.write_text(
+            yaml.safe_dump({str(export): registry_entry("openai-community/gpt2", "gpt2-small", "local-x", [1])}),
+            encoding="utf-8",
+        )
+
+        rows = extra_saes_directory_rows(saelens_df, committed, local_path)
+
+        assert [(row["release"], row["neuronpedia_id"]) for row in rows] == [(str(export), "gpt2-small/1-local-x")]
+
+    def test_a_local_directory_is_refused_in_the_committed_registry(self, tmp_path: Path):
+        export = tmp_path / "export"
+        export.mkdir()
+        path = write_registry(tmp_path, {str(export): registry_entry("openai-community/gpt2", "gpt2-small", "x", [0])})
+        with pytest.raises(ValueError, match="local path"):
+            extra_saes_directory_rows(get_saelens_neuronpedia_directory_df(), path)
+
+    def test_a_local_release_must_exist(self, tmp_path: Path):
+        local_path = tmp_path / "extra_saes.local.yaml"
+        local_path.write_text(
+            yaml.safe_dump(
+                {str(tmp_path / "missing"): registry_entry("openai-community/gpt2", "gpt2-small", "x", [0])}
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="not a directory"):
+            extra_saes_directory_rows(get_saelens_neuronpedia_directory_df(), write_registry(tmp_path, {}), local_path)
+
     def test_committed_registry_resolves(self):
         directory_df = get_saelens_neuronpedia_directory_df()
         registry = yaml.safe_load(EXTRA_SAES_PATH.read_text(encoding="utf-8")) or {}

@@ -340,6 +340,9 @@ class Config:
 
 
 EXTRA_SAES_PATH = Path(__file__).resolve().parent / "extra_saes.yaml"
+# Gitignored, per machine: the same format, but a release may also be an absolute path to a local
+# directory of SAELens folders (e.g. converted with utils/.../xai_toolkit before any upload).
+EXTRA_SAES_LOCAL_PATH = Path(__file__).resolve().parent / "extra_saes.local.yaml"
 
 
 @functools.cache
@@ -354,20 +357,46 @@ def _read_extra_saes(path: Path) -> dict[str, Any]:
     return data
 
 
-def extra_saes_directory_rows(saelens_df: pd.DataFrame, path: Path = EXTRA_SAES_PATH) -> list[dict[str, Any]]:
+def is_local_release(release: str) -> bool:
+    """True for a release that names a local directory (allowed only in extra_saes.local.yaml)."""
+    return Path(release).is_absolute()
+
+
+def extra_saes_directory_rows(
+    saelens_df: pd.DataFrame,
+    path: Path = EXTRA_SAES_PATH,
+    local_path: Path | None = None,
+) -> list[dict[str, Any]]:
     """Rows for SAEs that are in Hugging Face repos but not in SAELens' pretrained_saes.yaml.
 
     Each release is a repo id and each `path` a folder in it, which SAE.from_pretrained
     loads directly when the release is unknown to SAELens. `model` is the HF model id. A
     row takes the SAELens model key that a pod configured with that id resolves to, so
     adding a row never changes which existing SAEs a pod can see.
+
+    `local_path` (gitignored) adds rows the same way, and there a release may also be an absolute
+    path to a local directory, which the SAE loader reads from disk instead of the Hub.
     """
+    rows = _registry_rows(saelens_df, path, allow_local=False)
+    if local_path is not None:
+        rows += _registry_rows(saelens_df, local_path, allow_local=True)
+    return rows
+
+
+def _registry_rows(saelens_df: pd.DataFrame, path: Path, *, allow_local: bool) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     known_releases = set(saelens_df["release"])
     for release, entry in _read_extra_saes(path).items():
         if release in known_releases:
             raise ValueError(f"{path}: release {release!r} is also in SAELens' pretrained_saes.yaml")
-        if "/" not in release:
+        if is_local_release(release):
+            if not allow_local:
+                raise ValueError(
+                    f"{path}: release {release!r} is a local path; put local releases in {EXTRA_SAES_LOCAL_PATH.name}"
+                )
+            if not Path(release).is_dir():
+                raise ValueError(f"{path}: local release {release!r} is not a directory")
+        elif "/" not in release:
             raise ValueError(f"{path}: release {release!r} must be a Hugging Face repo id")
         model = resolve_saelens_model_id(entry["model"], saelens_df)
         for sae in entry["saes"]:
@@ -446,7 +475,7 @@ def get_saelens_neuronpedia_directory_df():
     )
     df_exploded = df_exploded.drop(columns=["neuronpedia_id_list"])
     df_exploded = df_exploded.reset_index(drop=True)
-    extra_rows = extra_saes_directory_rows(df_exploded)
+    extra_rows = extra_saes_directory_rows(df_exploded, EXTRA_SAES_PATH, EXTRA_SAES_LOCAL_PATH)
     if extra_rows:
         df_exploded = pd.concat([df_exploded, pd.DataFrame(extra_rows)], ignore_index=True)
     df_exploded["neuronpedia_set"] = df_exploded["neuronpedia_id"].apply(

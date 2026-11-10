@@ -182,3 +182,6 @@ docker_configs/
 ignore_this_test.py
 
 local_scripts/
+
+# Per-machine SAE registry: may name local directories (see config.EXTRA_SAES_LOCAL_PATH).
+neuronpedia_inference/extra_saes.local.yaml
