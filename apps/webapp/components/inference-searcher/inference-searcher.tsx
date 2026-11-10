@@ -491,6 +491,7 @@ export default function InferenceSearcher({
                   positions={imagePositions}
                   selected={sortIndexes}
                   onTogglePatch={(tokenIndex) => toggleSortIndexes([tokenIndex], !sortIndexes.includes(tokenIndex))}
+                  sizePx={360}
                 />
                 <div className="max-w-xs text-left font-sans text-[11px] font-medium leading-snug text-slate-400">
                   Click patches to sort results by their activations on those parts of the image, or the{' '}

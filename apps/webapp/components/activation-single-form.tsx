@@ -332,7 +332,7 @@ export default function ActivationSingleForm({
                     cols={resultImageInfo.gridCols}
                     positions={imagePositions}
                     values={activationResult.values}
-                    sizePx={144}
+                    sizePx={220}
                   />
                 </div>
               )}

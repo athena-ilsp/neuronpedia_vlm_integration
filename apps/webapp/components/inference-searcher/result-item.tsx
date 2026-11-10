@@ -252,7 +252,7 @@ export default function ResultItem({
                 cols={searchImage.info.gridCols}
                 positions={imagePositions}
                 values={result.values}
-                sizePx={96}
+                sizePx={200}
               />
             )}
           </div>
