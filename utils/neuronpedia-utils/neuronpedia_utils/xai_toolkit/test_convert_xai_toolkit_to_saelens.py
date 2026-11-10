@@ -31,6 +31,8 @@ def _write_checkpoint(
     topk: int | None = None,
     step: int = 1000,
     seed: int = 0,
+    flat: bool = False,
+    extra_config: dict | None = None,
 ) -> Path:
     g = torch.Generator().manual_seed(seed + layer)
     W_dec = torch.randn(D_SAE, D_IN, generator=g)
@@ -62,8 +64,14 @@ def _write_checkpoint(
         "top_k": topk,
         "dtype": "torch.float32",
         "context_size": 128,
+        **(extra_config or {}),
     }
-    model_dir = run_dir / f"layer_{layer}" / f"checkpoint_step_{step}" / "sae_model"
+    # `flat` is the layout a released set ships in (e.g. ilsp/vlm-transcoders): layer_N/ directly.
+    model_dir = (
+        run_dir / f"layer_{layer}"
+        if flat
+        else run_dir / f"layer_{layer}" / f"checkpoint_step_{step}" / "sae_model"
+    )
     model_dir.mkdir(parents=True)
     (model_dir / conv.CONFIG_NAME).write_text(json.dumps(config))
     save_file(tensors, str(model_dir / conv.WEIGHTS_SAFE_NAME))
@@ -85,8 +93,8 @@ def _round_trip(tmp_path: Path, model_dir: Path) -> tuple[conv.Checkpoint, SAE, 
 
 @pytest.mark.parametrize(
     ("transcoder", "topk"),
-    [(False, None), (True, None), (False, 8)],
-    ids=["l1-sae", "l1-transcoder", "topk-sae"],
+    [(False, None), (True, None), (False, 8), (True, 8)],
+    ids=["l1-sae", "l1-transcoder", "topk-sae", "topk-transcoder"],
 )
 def test_loaded_saelens_model_reproduces_the_xai_toolkit_forward(
     tmp_path: Path, transcoder: bool, topk: int | None
@@ -161,12 +169,49 @@ def test_an_unmapped_hook_is_refused_with_the_way_out():
         conv.neuronpedia_hook("model.embed_tokens.hook_out", "out")
 
 
-def test_a_topk_transcoder_is_refused_rather_than_approximated(tmp_path: Path):
+def test_a_topk_transcoder_keeps_its_output_hook(tmp_path: Path):
+    _, sae, _ = _round_trip(
+        tmp_path, _write_checkpoint(tmp_path / "run", 4, transcoder=True, topk=8)
+    )
+    assert sae.cfg.metadata.hook_name == "blocks.4.mlp.hook_in"
+    assert sae.cfg.metadata.hook_name_out == "blocks.4.mlp.hook_out"
+
+
+def test_batch_topk_is_refused_rather_than_approximated(tmp_path: Path):
+    ckpt = conv.read_checkpoint(
+        _write_checkpoint(
+            tmp_path / "run",
+            1,
+            transcoder=True,
+            topk=8,
+            extra_config={"batch_topk": True},
+        )
+    )
+    with pytest.raises(NotImplementedError, match="BatchTopK"):
+        conv.build_saelens(ckpt, {"hook_name": "blocks.1.mlp.hook_in"})
+
+
+def test_a_topk_transcoder_between_different_widths_is_refused(tmp_path: Path):
     ckpt = conv.read_checkpoint(
         _write_checkpoint(tmp_path / "run", 1, transcoder=True, topk=8)
     )
-    with pytest.raises(NotImplementedError, match="top-k transcoder"):
-        conv.build_saelens(ckpt, {"hook_name": "blocks.1.mlp.hook_in"})
+    t = dict(
+        ckpt.tensors,
+        W_dec=torch.zeros(D_SAE, D_IN * 2),
+        b_dec_out=torch.zeros(D_IN * 2),
+    )
+    wider = conv.Checkpoint(path=ckpt.path, config=ckpt.config, tensors=t)
+    with pytest.raises(NotImplementedError, match="d_in != d_out"):
+        conv.build_saelens(wider, {"hook_name": "blocks.1.mlp.hook_in"})
+
+
+def test_a_flattened_release_is_found_and_takes_no_step(tmp_path: Path):
+    run = tmp_path / "release"
+    model_dir = _write_checkpoint(run, 6, transcoder=True, topk=8, flat=True)
+    assert conv.find_checkpoint(run, 6, "latest") == model_dir
+    assert conv.available_layers(run) == [6]
+    with pytest.raises(ValueError, match="flattened release"):
+        conv.find_checkpoint(run, 6, "1000")
 
 
 def test_latest_is_the_highest_step_numerically_not_lexically(tmp_path: Path):

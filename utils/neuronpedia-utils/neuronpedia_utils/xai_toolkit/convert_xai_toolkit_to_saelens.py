@@ -1,7 +1,9 @@
 """Convert xai_toolkit SAE / transcoder checkpoints into SAELens folders for Neuronpedia.
 
 xai_toolkit (model-agnostic sparse-coder training) saves one checkpoint per layer as
-``run_dir/layer_{L}/checkpoint_step_{K}/sae_model/{config.json, model.safetensors}``. This writes
+``run_dir/layer_{L}/checkpoint_step_{K}/sae_model/{config.json, model.safetensors}``; released sets
+(e.g. on Hugging Face) are flattened to ``run_dir/layer_{L}/{config.json, model.safetensors}``.
+Both are read. This writes
 each as a SAELens folder (``cfg.json`` + ``sae_weights.safetensors``) that inference loads through
 ``apps/inference/neuronpedia_inference/extra_saes.yaml``, plus the registry entry to paste there.
 
@@ -13,6 +15,13 @@ xai_toolkit forward before it is written:
     SAE     decode  f W_dec + b_dec + b_centering    f W_dec + b_dec',  b_dec' = b_dec + b_centering
     TC      decode  f W_dec + b_dec_out              f W_dec + b_dec',  b_dec' = b_dec_out
     top-k   output scaled by reconstruction_scale   folded into W_dec and b_dec'
+
+SAELens has no top-k transcoder, so one with d_in == d_out (an MLP transcoder) becomes a TopKSAE:
+encode and decode are the same arithmetic, exactly. Its output hook is kept as ``hook_name_out``
+in the metadata. Neuronpedia encodes at ``hook_name`` and, like for every transcoder it serves,
+steers there too -- the decoder actually writes at ``hook_name_out``, so steering a transcoder is
+approximate while activations are exact. BatchTopK (``batch_topk``) is refused: its inference cut is
+a learned threshold, not a per-token top-k.
 
 Hook names: xai_toolkit's ``hook_point`` is the INPUT of a module and ``out_hook_point`` its
 OUTPUT. They are mapped to the TransformerLens-style names Neuronpedia's engine adapter resolves.
@@ -76,8 +85,18 @@ class Checkpoint:
 
 
 def find_checkpoint(run_dir: Path, layer: int, step: str) -> Path:
-    """``run_dir/layer_{L}/checkpoint_step_{K}/sae_model``, the layout xai_toolkit's loader reads."""
+    """The folder holding ``config.json`` for ``layer``.
+
+    ``run_dir/layer_{L}`` itself for a flattened release, else
+    ``run_dir/layer_{L}/checkpoint_step_{K}/sae_model``, the layout xai_toolkit's loader reads.
+    """
     layer_dir = run_dir / f"layer_{layer}"
+    if (layer_dir / CONFIG_NAME).exists():
+        if step != "latest":
+            raise ValueError(
+                f"{layer_dir} is a flattened release with one checkpoint; omit --checkpoint-step"
+            )
+        return layer_dir
     steps = sorted(
         (d for d in layer_dir.glob("checkpoint_step_*") if d.is_dir()),
         key=lambda d: int(d.name.removeprefix("checkpoint_step_")),
@@ -185,15 +204,21 @@ def build_saelens(ckpt: Checkpoint, metadata: dict[str, Any]) -> SAE[Any]:
         "metadata": SAEMetadata(**metadata),
     }
     sae: SAE[Any]
-    if ckpt.is_transcoder:
-        if ckpt.use_topk:
-            raise NotImplementedError(
-                f"{ckpt.path}: a top-k transcoder has no SAELens class to load into; only L1 transcoders convert."
-            )
+    if ckpt.config.get("batch_topk"):
+        raise NotImplementedError(
+            f"{ckpt.path}: BatchTopK infers with a learned threshold (act_threshold), which no SAELens class models."
+        )
+    if ckpt.is_transcoder and ckpt.use_topk and d_in != d_out:
+        raise NotImplementedError(
+            f"{ckpt.path}: a top-k transcoder with d_in != d_out ({d_in} -> {d_out}) has no SAELens class."
+        )
+    if ckpt.is_transcoder and not ckpt.use_topk:
         sae = Transcoder(TranscoderConfig(**common, d_out=d_out))
     elif ckpt.use_topk:
-        # The decoder rows are unit norm (the trainer renormalizes every step), so rescaling by
-        # them would be a no-op; off keeps the top-k selection exactly the trained one.
+        # A top-k transcoder lands here too: with d_in == d_out a TopKSAE does the same encode and
+        # decode (see the module docstring).
+        # The decoder rows are unit norm (the trainer renormalizes every step), so
+        # rescaling by them would be a no-op; off keeps the top-k selection exactly the trained one.
         sae = TopKSAE(
             TopKSAEConfig(
                 **common,
@@ -329,8 +354,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--upload-repo",
-        required=True,
-        help="HF repo the export goes to; the registry key",
+        help="HF repo the export goes to, and the registry key. Without it the registry entry "
+        "points at the export folder itself, which inference can serve from local disk.",
     )
     parser.add_argument(
         "--hook-name", help="Override the input hook, with a {layer} placeholder"
@@ -340,7 +365,9 @@ def main() -> None:
         help="Override a transcoder's output hook, with a {layer} placeholder",
     )
     parser.add_argument(
-        "--out-dir", type=Path, help="Default: exports/<upload repo name>"
+        "--out-dir",
+        type=Path,
+        help="Default: exports/<upload repo name>; required without --upload-repo",
     )
     parser.add_argument(
         "--upload",
@@ -348,13 +375,19 @@ def main() -> None:
         help="Upload the export to --upload-repo (private)",
     )
     args = parser.parse_args()
+    if not args.upload_repo and not args.out_dir:
+        parser.error("pass --upload-repo, --out-dir, or both")
+    if args.upload and not args.upload_repo:
+        parser.error("--upload needs --upload-repo")
 
     layers = (
         available_layers(args.run_dir)
         if args.layers == "all"
         else [int(x) for x in args.layers.split(",")]
     )
-    out_dir = args.out_dir or Path("exports") / args.upload_repo.split("/")[-1]
+    out_dir = (
+        args.out_dir or Path("exports") / args.upload_repo.split("/")[-1]
+    ).resolve()
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True)
@@ -383,8 +416,10 @@ def main() -> None:
             f"layer {layer:>3} -> {folder} ({kind}) max|diff| acts={diffs['acts']:.1e} out={diffs['output']:.1e}"
         )
 
+    # The release is where inference finds the folders: the HF repo, or this export on disk.
+    release = args.upload_repo or str(out_dir)
     entry = registry_entry(
-        args.upload_repo, args.hf_model_id, args.np_model_id, args.np_set_name, layers
+        release, args.hf_model_id, args.np_model_id, args.np_set_name, layers
     )
     registry_path = out_dir.parent / f"{out_dir.name}.registry.yaml"
     registry_path.write_text(yaml.safe_dump(entry, sort_keys=False))
