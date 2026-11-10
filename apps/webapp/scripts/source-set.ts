@@ -27,7 +27,7 @@ Usage: source-set add --model <id> --set <name> --layers <spec> [options]
   --model <id>            Neuronpedia model id, e.g. gemma-3-4b-it
   --set <name>            source set name; "neurons" registers the model's raw MLP neurons
   --layers <spec>         layers to register, e.g. 0-33 or 0,5,10
-  --description <text>   source set description
+  --description <text>   source set description (or SOURCE_SET_DESCRIPTION in the environment)
   --model-layers <n>      layer count, needed only when the model does not exist yet
   --owner <name>          model owner, when creating the model (default: Unknown)
   --instruct              mark a newly created model as instruction-tuned
@@ -99,7 +99,9 @@ async function add(args: Map<string, string>) {
   }
 
   const description =
-    args.get('description') || (setName === NEURONS_SOURCESET ? 'MLP neurons' : `${setName} (registered locally)`);
+    args.get('description') ||
+    process.env.SOURCE_SET_DESCRIPTION ||
+    (setName === NEURONS_SOURCESET ? 'MLP neurons' : `${setName} (registered locally)`);
   const stubs = args.get('stubs');
   // With stubs every feature has a page (empty of precomputed activations), which is what the
   // webapp's `hasDashboards` gates on -- the model page lists, and searches, only sets that have it.

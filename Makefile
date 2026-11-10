@@ -146,9 +146,10 @@ source-set-add: ## Sources: register a model's source set not in the admin impor
 		echo "  e.g. make source-set-add MODEL=gemma-3-4b-it SET=neurons LAYERS=0-33 MODEL_LAYERS=34 INSTRUCT=1"; \
 		exit 1; \
 	fi
-	@$(SOURCE_SET_CLI) add --model $(MODEL) --set $(SET) --layers $(LAYERS) \
+	@# DESCRIPTION goes through the environment: env-cmd --use-shell re-joins arguments into one
+	@# shell line, so quotes around free text would not survive it.
+	@export SOURCE_SET_DESCRIPTION='$(subst ','\'',$(DESCRIPTION))'; $(SOURCE_SET_CLI) add --model $(MODEL) --set $(SET) --layers $(LAYERS) \
 		$(if $(MODEL_LAYERS),--model-layers $(MODEL_LAYERS),) \
-		$(if $(DESCRIPTION),--description "$(DESCRIPTION)",) \
 		$(if $(INSTRUCT),--instruct,) \
 		$(if $(STUBS),--stubs $(STUBS),)
 
