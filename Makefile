@@ -153,6 +153,31 @@ source-set-add: ## Sources: register a model's source set not in the admin impor
 		$(if $(INSTRUCT),--instruct,) \
 		$(if $(STUBS),--stubs $(STUBS),)
 
+XAI_IMPORT = utils/neuronpedia-utils/neuronpedia_utils/xai_toolkit/import_xai_release.py
+
+xai-import: ## Sources: download, convert, verify and register one model's xai_toolkit SAEs/transcoders from a HF release. Required: FOLDER. Options: REPO (default ilsp/vlm-transcoders), RUN_DIR (local copy), MODEL, HF_MODEL, SET, EXPORT_ROOT, REVISION
+	@if [ -z "$(FOLDER)" ]; then \
+		echo "Error: FOLDER is required, e.g. make xai-import FOLDER=gemma-3-4b-it"; \
+		exit 1; \
+	fi
+	@summary=$$(mktemp); \
+	set -a; if [ -f .env ]; then . ./.env; fi; set +a; \
+	( cd apps/inference && $(call uv_run,inference) python ../../$(XAI_IMPORT) \
+		--folder $(FOLDER) --repo $(or $(REPO),ilsp/vlm-transcoders) --print-summary $$summary \
+		$(if $(RUN_DIR),--run-dir $(abspath $(RUN_DIR)),) \
+		$(if $(MODEL),--model $(MODEL),) \
+		$(if $(HF_MODEL),--hf-model-id $(HF_MODEL),) \
+		$(if $(SET),--set $(SET),) \
+		$(if $(EXPORT_ROOT),--export-root $(abspath $(EXPORT_ROOT)),) \
+		$(if $(REVISION),--revision $(REVISION),) ) && \
+	. $$summary && rm -f $$summary && \
+	$(MAKE) --no-print-directory source-set-add MODEL=$$MODEL SET=$$SET LAYERS=$$LAYERS \
+		MODEL_LAYERS=$$MODEL_LAYERS STUBS=$$STUBS INSTRUCT=1 DESCRIPTION="$$DESCRIPTION" && \
+	echo "" && \
+	echo "Imported $$MODEL / $$SET. Serve it with:" && \
+	echo "  make inference-dev MODEL_SOURCESET=$$MODEL.$$SET" && \
+	echo "  make host-add SERVICE=INFERENCE MODEL=$$MODEL URL=http://127.0.0.1:5002 SOURCE_SETS=$$SET"
+
 db-reset: ## Database: DROP the schema and rebuild it - this deletes your local data!
 	@echo "WARNING: This will delete all data in your local Neuronpedia database!"
 	@read -p "Are you sure you want to continue? (y/N) " confirm; \

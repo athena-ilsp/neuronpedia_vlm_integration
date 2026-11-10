@@ -303,6 +303,46 @@ def convert_layer(
     return folder, diffs
 
 
+def convert_run(
+    run_dir: Path,
+    layers: list[int],
+    out_dir: Path,
+    *,
+    np_model_id: str,
+    np_set_name: str,
+    hf_model_id: str,
+    checkpoint_step: str = "latest",
+    hook_name: str | None = None,
+    hook_name_out: str | None = None,
+) -> None:
+    """Convert ``layers`` of a run into ``out_dir`` (replaced), checking each against xai_toolkit."""
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True)
+    for layer in layers:
+        ckpt = read_checkpoint(find_checkpoint(run_dir, layer, checkpoint_step))
+        folder, diffs = convert_layer(
+            ckpt,
+            out_dir,
+            np_model_id=np_model_id,
+            np_set_name=np_set_name,
+            hf_model_id=hf_model_id,
+            hook_name=hook_name,
+            hook_name_out=hook_name_out,
+        )
+        kind = (
+            "transcoder"
+            if ckpt.is_transcoder
+            else "topk SAE"
+            if ckpt.use_topk
+            else "SAE"
+        )
+        print(
+            f"layer {layer:>3} -> {folder} ({kind}) max|diff| acts={diffs['acts']:.1e} out={diffs['output']:.1e}",
+            flush=True,
+        )
+
+
 def registry_entry(
     repo_id: str,
     hf_model_id: str,
@@ -388,33 +428,17 @@ def main() -> None:
     out_dir = (
         args.out_dir or Path("exports") / args.upload_repo.split("/")[-1]
     ).resolve()
-    if out_dir.exists():
-        shutil.rmtree(out_dir)
-    out_dir.mkdir(parents=True)
-
-    for layer in layers:
-        ckpt = read_checkpoint(
-            find_checkpoint(args.run_dir, layer, args.checkpoint_step)
-        )
-        folder, diffs = convert_layer(
-            ckpt,
-            out_dir,
-            np_model_id=args.np_model_id,
-            np_set_name=args.np_set_name,
-            hf_model_id=args.hf_model_id,
-            hook_name=args.hook_name,
-            hook_name_out=args.hook_name_out,
-        )
-        kind = (
-            "transcoder"
-            if ckpt.is_transcoder
-            else "topk SAE"
-            if ckpt.use_topk
-            else "SAE"
-        )
-        print(
-            f"layer {layer:>3} -> {folder} ({kind}) max|diff| acts={diffs['acts']:.1e} out={diffs['output']:.1e}"
-        )
+    convert_run(
+        args.run_dir,
+        layers,
+        out_dir,
+        np_model_id=args.np_model_id,
+        np_set_name=args.np_set_name,
+        hf_model_id=args.hf_model_id,
+        checkpoint_step=args.checkpoint_step,
+        hook_name=args.hook_name,
+        hook_name_out=args.hook_name_out,
+    )
 
     # The release is where inference finds the folders: the HF repo, or this export on disk.
     release = args.upload_repo or str(out_dir)

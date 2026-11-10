@@ -40,6 +40,36 @@ make inference-dev MODEL_SOURCESET=gemma-3-4b-it.xai-tc-topk64-16x
 make host-add SERVICE=INFERENCE MODEL=gemma-3-4b-it URL=http://127.0.0.1:5002 SOURCE_SETS=xai-tc-topk64-16x
 ```
 
+## One command per model: `make xai-import`
+
+For a release that holds one folder per base model (e.g. `ilsp/vlm-transcoders`), from the repo root:
+
+```bash
+make xai-import FOLDER=qwen2.5-vl-3b-instruct EXPORT_ROOT=../sae_weights/converted
+```
+
+`import_xai_release.py` downloads only that folder, converts and checks every layer, merges the entry
+into `extra_saes.local.yaml` (replacing an earlier import of the same set), writes
+`.env.inference.<model>.<set>` unless it exists, and the target then registers the set and its
+feature stubs (`make source-set-add`). The model id comes from the folder (`-instruct` -> `-it`), its
+HF id from `np_model_to_hf.json`, and the set name from the coders' config (`xai-tc-topk128-16x`).
+`RUN_DIR=` uses a local copy instead of downloading; `MODEL=`, `HF_MODEL=`, `SET=`, `REVISION=`
+override the rest.
+
+## Attribution graphs: `circuit_tracer_export.py`
+
+The graph server attributes with circuit-tracer, which loads transcoders from its own cache. This
+writes one there, with the same folding and per-layer check:
+
+```bash
+uv run python circuit_tracer_export.py --run-dir /path/to/gemma-3-4b-it --name gemma-3-4b-it-xai-tc-topk64-16x
+# then: TRANSCODER_SET=local/gemma-3-4b-it-xai-tc-topk64-16x
+```
+
+A top-k transcoder is written as `activation: topk_relu`, which needs circuit-tracer's
+`feat/multimodal-inputs` branch (plain `topk` keeps negative survivors; that branch also stops a cached
+top-k set from loading as ReLU).
+
 ## The weights are re-expressed exactly
 
 Every layer is checked against the xai_toolkit forward before it is written, and the run stops
