@@ -140,7 +140,7 @@ host-remove: ## Hosts: deregister a GPU server. Required: SERVICE, URL
 SOURCE_SET_CLI = cd apps/webapp && npx --no-install env-cmd -f .env.localhost --use-shell \
 	'ts-node --compiler-options {\"module\":\"CommonJS\"} scripts/source-set.ts'
 
-source-set-add: ## Sources: register a model's source set not in the admin import (e.g. neurons, your own SAEs). Required: MODEL, SET, LAYERS. Optional: MODEL_LAYERS, DESCRIPTION, INSTRUCT=1, STUBS=<features per source>
+source-set-add: ## Sources: register a model's source set not in the admin import (e.g. neurons, your own SAEs). Required: MODEL, SET, LAYERS. Optional: MODEL_LAYERS, DESCRIPTION, INSTRUCT=1, STUBS=<features per source>, GRAPH=1 (transcoders for attribution graphs)
 	@if [ -z "$(MODEL)" ] || [ -z "$(SET)" ] || [ -z "$(LAYERS)" ]; then \
 		echo "Error: MODEL, SET and LAYERS are all required."; \
 		echo "  e.g. make source-set-add MODEL=gemma-3-4b-it SET=neurons LAYERS=0-33 MODEL_LAYERS=34 INSTRUCT=1"; \
@@ -151,7 +151,8 @@ source-set-add: ## Sources: register a model's source set not in the admin impor
 	@export SOURCE_SET_DESCRIPTION='$(subst ','\'',$(DESCRIPTION))'; $(SOURCE_SET_CLI) add --model $(MODEL) --set $(SET) --layers $(LAYERS) \
 		$(if $(MODEL_LAYERS),--model-layers $(MODEL_LAYERS),) \
 		$(if $(INSTRUCT),--instruct,) \
-		$(if $(STUBS),--stubs $(STUBS),)
+		$(if $(STUBS),--stubs $(STUBS),) \
+		$(if $(GRAPH),--graph,)
 
 XAI_IMPORT = utils/neuronpedia-utils/neuronpedia_utils/xai_toolkit/import_xai_release.py
 

@@ -33,6 +33,8 @@ Usage: source-set add --model <id> --set <name> --layers <spec> [options]
   --instruct              mark a newly created model as instruction-tuned
   --stubs <count>         also create <count> feature stubs per source (indexes 0..count-1), so
                           feature pages exist; e.g. the SAE width, or the MLP width for neurons
+  --graph                 the set's transcoders back attribution graphs: list it on the graph page
+                          and let it generate graphs (a graph host serving it is still needed)
   --remote                allow writing to a database that is not on this machine
 `;
 
@@ -107,9 +109,12 @@ async function add(args: Map<string, string>) {
   // webapp's `hasDashboards` gates on -- the model page lists, and searches, only sets that have it.
   // Without stubs there is nothing to open, so the flag stays off. Only ever turned on here.
   const dashboards = stubs !== undefined ? { hasDashboards: true } : {};
+  // `hasGraphs` lists the set on the graph page, `graphEnabled` offers it for generating graphs.
+  // Likewise only ever turned on here.
+  const graphs = args.has('graph') ? { hasGraphs: true, graphEnabled: true } : {};
   await prisma.sourceSet.upsert({
     where: { modelId_name: { modelId, name: setName } },
-    update: { description, visibility: Visibility.PUBLIC, allowInferenceSearch: true, ...dashboards },
+    update: { description, visibility: Visibility.PUBLIC, allowInferenceSearch: true, ...dashboards, ...graphs },
     create: {
       modelId,
       name: setName,
@@ -120,6 +125,7 @@ async function add(args: Map<string, string>) {
       visibility: Visibility.PUBLIC,
       hasDashboards: stubs !== undefined,
       allowInferenceSearch: true,
+      ...graphs,
     },
   });
 
