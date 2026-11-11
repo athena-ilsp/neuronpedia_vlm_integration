@@ -154,3 +154,27 @@ def test_capture_refuses_forward_kwargs_off_the_eager_backend():
                 {"pixel_values": torch.zeros(1, 3, 4, 4)},
             )
         )
+
+
+def test_dynamic_resolution_processors_are_capped_and_fixed_ones_left_alone(monkeypatch):
+    from types import SimpleNamespace
+
+    from neuronpedia_inference import multimodal
+
+    calls = []
+
+    def fake_from_pretrained(model_id, **kwargs):
+        calls.append((model_id, kwargs))
+        # Qwen-VL's image processor has a merge_size; Gemma 3's does not.
+        merge = 2 if "qwen" in model_id else None
+        return SimpleNamespace(image_processor=SimpleNamespace(merge_size=merge))
+
+    monkeypatch.setattr(multimodal.AutoProcessor, "from_pretrained", fake_from_pretrained)
+    multimodal._processor.cache_clear()
+    try:
+        multimodal._processor("qwen-vl")
+        multimodal._processor("gemma-3")
+    finally:
+        multimodal._processor.cache_clear()
+    assert ("qwen-vl", {"max_pixels": multimodal.IMAGE_MAX_PIXELS}) in calls
+    assert [kwargs for model_id, kwargs in calls if model_id == "gemma-3"] == [{}]

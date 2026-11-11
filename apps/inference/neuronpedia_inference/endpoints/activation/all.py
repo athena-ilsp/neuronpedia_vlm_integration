@@ -206,6 +206,12 @@ class ActivationProcessor:
         if prompt.image is not None and request.ignore_chat_template_tokens:
             self._masked_positions = prompt.image.template_positions()
         if len(tokens) > config.activation_token_limit:
+            if prompt.image is not None:
+                # A 400 the user can act on, rather than the 500 a plain ValueError becomes.
+                raise MultimodalInputError(
+                    f"The image and text come to {len(tokens)} tokens; the limit is "
+                    f"{config.activation_token_limit}. Use a shorter text or a smaller image."
+                )
             raise ValueError(f"Text too long: {len(tokens)} tokens, max is {config.activation_token_limit}")
 
         # Ensure each selected source has metadata (hook/type) before capture: get_sae_hook

@@ -25,6 +25,7 @@ import binascii
 import io
 import logging
 import math
+import os
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -42,6 +43,8 @@ logger = logging.getLogger(__name__)
 #: Ceiling on the decoded image, in bytes. Requests arrive as base64 JSON from the webapp; this
 #: keeps one request from holding hundreds of MB of host memory before the processor resizes it.
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
+# Pixel cap for processors that size the image token count to the image (see `_processor`).
+IMAGE_MAX_PIXELS = int(os.getenv("IMAGE_MAX_PIXELS", str(448 * 448)))
 
 #: Processor outputs that are not forward kwargs: the ids are passed as tokens, and capture takes
 #: the mask through its own argument (a single unpadded prompt needs none).
@@ -137,9 +140,17 @@ def _locate_text(token_ids: list[int], text_ids: list[int], start: int) -> list[
 
 @lru_cache(maxsize=2)
 def _processor(hf_model_id: str) -> Any:
-    """The model's processor, loaded once per process on the first image request."""
+    """The model's processor, loaded once per process on the first image request.
+
+    Dynamic-resolution processors (Qwen-VL: one token per 28x28 block after its 2x2 merge) are
+    capped at ``IMAGE_MAX_PIXELS``; uncapped, a photo becomes over a thousand tokens and runs past
+    the token limit. The default, 448x448, is 256 tokens: the same as Gemma 3's fixed count.
+    """
     logger.info("Loading processor for %s (first image request)", hf_model_id)
-    return AutoProcessor.from_pretrained(hf_model_id)
+    processor = AutoProcessor.from_pretrained(hf_model_id)
+    if getattr(getattr(processor, "image_processor", None), "merge_size", None):
+        processor = AutoProcessor.from_pretrained(hf_model_id, max_pixels=IMAGE_MAX_PIXELS)
+    return processor
 
 
 def _image_grid(processor: Any, batch: dict[str, Any], n_image_tokens: int) -> tuple[int | None, int | None]:
