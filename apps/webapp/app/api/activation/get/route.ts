@@ -71,7 +71,8 @@ export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
       where: {
         modelId,
         layer: source,
-        index,
+        // The column is a string; a numeric index in the body would fail Prisma's validation.
+        index: String(index),
         creatorId: {
           in: PUBLIC_ACTIVATIONS_USER_IDS,
         },
