@@ -5,6 +5,7 @@ import {
   GRAPH_DESIREDLOGITPROB_MAX,
   GRAPH_DESIREDLOGITPROB_MIN,
   GRAPH_GENERATION_ENABLED_MODELS,
+  GRAPH_MAX_IMAGE_BASE64_CHARS,
   GRAPH_MAXNLOGITS_DEFAULT,
   GRAPH_MAXNLOGITS_MAX,
   GRAPH_MAXNLOGITS_MIN,
@@ -33,6 +34,7 @@ const tokenizeRequestSchema = yup.object({
     .nullable(),
   modelId: yup.string().min(1).required().oneOf(GRAPH_GENERATION_ENABLED_MODELS),
   sourceSetName: yup.string().nullable(),
+  imageBase64: yup.string().max(GRAPH_MAX_IMAGE_BASE64_CHARS).optional(),
   maxNLogits: yup
     .number()
     .integer('Must be an integer.')
@@ -86,6 +88,9 @@ const tokenizeRequestSchema = yup.object({
  *                 description: Prompt text to tokenize.
  *                 maxLength: 10000
  *                 example: "Fact: The capital of the state containing Dallas is"
+ *               imageBase64:
+ *                 type: string
+ *                 description: Optional. A base64 image (or data URL) for a vision-language model, placed where its chat template puts an image. Its patch tokens then appear in input_tokens.
  *               maxNLogits:
  *                 type: integer
  *                 description: Maximum number of salient logits to return.
@@ -186,6 +191,7 @@ export async function POST(request: Request) {
       validatedData.modelId,
       validatedData.sourceSetName,
       validatedData.messages as GraphChatMessage[] | null,
+      validatedData.imageBase64,
     );
 
     // console.log('tokenizedResponse', tokenizedResponse);

@@ -21,6 +21,7 @@ import {
   parseGraphClerps,
   parseGraphSupernodes,
 } from '@/app/[modelId]/graph/utils';
+import { IS_LOCALHOST } from '@/lib/env';
 import {
   ActivationWithPartialRelations,
   GraphMetadataSubgraphPartialWithRelations,
@@ -293,7 +294,8 @@ export function GraphProvider({
   };
 
   const getFilterGraphTypeForCurrentUser = (graph: GraphMetadata) => {
-    if (session.data?.user?.id === graph.userId) {
+    // Locally, graphs generated signed out (no user) are the developer's own.
+    if (session.data?.user?.id === graph.userId || (IS_LOCALHOST && !graph.userId)) {
       return FilterGraphType.Mine;
     }
     if (graph.isFeatured) {
@@ -997,9 +999,11 @@ export function GraphProvider({
               index: node.featureDetailNP.index,
             }),
           })
-            .then((response) => response.json())
-            .then((acts: ActivationWithPartialRelations[]) => {
-              if (node?.featureDetailNP) {
+            // A feature with no stored activations (e.g. a locally registered stub) answers with an
+            // error body; keep the prefetched ones rather than replacing them with that.
+            .then(async (response) => (response.ok ? response.json() : null))
+            .then((acts: ActivationWithPartialRelations[] | null) => {
+              if (node?.featureDetailNP && Array.isArray(acts)) {
                 // console.log('setting full NP feature detail', acts.length);
                 // Create a new node object with updated activations to trigger re-render
                 setNode((prevNode: CLTGraphNode | null) => {

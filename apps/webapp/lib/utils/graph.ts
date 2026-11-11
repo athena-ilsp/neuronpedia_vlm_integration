@@ -33,6 +33,9 @@ export const getEstimatedTimeFromNumTokens = (numTokens: number, slower: boolean
   11.2 * Math.log2(Math.max(numTokens, 4)) - 7 + (slower ? 20 : 0) + (isLorsa ? 20 : 0);
 export const GRAPH_MAX_TOKENS = 64;
 export const GRAPH_GENERATION_ENABLED_MODELS = ['gemma-2-2b', 'gemma-3-4b-it', 'qwen3-4b', 'qwen3-1.7b'];
+// Models whose graph server can attribute an image + text prompt (vision-language models served
+// with the interp_engine backend). Only these get an image picker when generating a graph.
+export const GRAPH_IMAGE_INPUT_MODELS = ['gemma-3-4b-it'];
 
 export const LORSA_MODELS = ['qwen3-1.7b'];
 export const LORSA_BATCH_SIZE = 16;
@@ -45,6 +48,8 @@ export const GRAPH_MODEL_MAP = {
 };
 
 export const GRAPH_S3_USER_GRAPHS_DIR = 'user-graphs';
+// The graph server decodes at most 20 MiB of image; base64 is 4/3 of that, plus a data-URL header.
+export const GRAPH_MAX_IMAGE_BASE64_CHARS = Math.ceil((20 * 1024 * 1024 * 4) / 3) + 100;
 
 export const GRAPH_MAXNLOGITS_MIN = 5;
 export const GRAPH_MAXNLOGITS_MAX = 15;
@@ -110,6 +115,9 @@ export const graphGenerateSchemaClient = yup.object({
     .nullable(),
   modelId: yup.string().min(1, 'Model is required.').oneOf(GRAPH_GENERATION_ENABLED_MODELS).required(),
   sourceSetName: yup.string().nullable(),
+  // A base64 image (or data URL) for a vision-language model, placed where its chat template puts
+  // an image. The graph server refuses it unless it serves an image-capable model.
+  imageBase64: yup.string().max(GRAPH_MAX_IMAGE_BASE64_CHARS, 'Images must be smaller than 20 MB.').optional(),
   maxNLogits: yup
     .number()
     .integer('Must be an integer.')
@@ -183,6 +191,9 @@ export const getGraphTokenize = async (
   // string via the model's real chat template (no frontend chat templating);
   // the rendered string is returned as `prompt`.
   messages?: GraphChatMessage[] | null,
+  // An image shown to a vision-language model ahead of the text; its patch tokens are in
+  // `input_tokens` of the response.
+  imageBase64?: string,
 ): Promise<GraphTokenizeResponse> => {
   const action = 'forward-pass';
   const response = await graphFetch(modelId, sourceSetName, action, {
@@ -190,6 +201,7 @@ export const getGraphTokenize = async (
     max_n_logits: maxNLogits,
     desired_logit_prob: desiredLogitProb,
     request_type: action,
+    ...(imageBase64 ? { image_base64: imageBase64 } : {}),
   });
 
   const responseText = await response.text();
@@ -203,6 +215,10 @@ export const getGraphTokenize = async (
   }
   if (json.error) {
     throw new Error(json.error);
+  }
+  // FastAPI reports a refused request (e.g. an unreadable image) as `detail`.
+  if (!response.ok && typeof json.detail === 'string') {
+    throw new Error(json.detail);
   }
   if (!response.ok) {
     throw new Error(`External API returned ${response.status}: ${response.statusText}`);
@@ -288,6 +304,8 @@ export const generateGraphAndUploadToS3 = async (
   // via the model's real chat template (the generated graph's metadata.prompt
   // holds the rendered string, which is what gets stored).
   messages?: GraphChatMessage[] | null,
+  // An image for a vision-language model; the graph's metadata.image_input then describes it.
+  imageBase64?: string,
 ) => {
   const action = 'generate-graph';
   const isLorsa = LORSA_MODELS.includes(modelId);
@@ -305,6 +323,7 @@ export const generateGraphAndUploadToS3 = async (
     max_feature_nodes: maxFeatureNodes,
     signed_url: signedUrl,
     user_id: userId,
+    ...(imageBase64 ? { image_base64: imageBase64 } : {}),
     // QK tracing is always enabled for lorsa models
     ...(isLorsa
       ? {
@@ -319,6 +338,9 @@ export const generateGraphAndUploadToS3 = async (
   const json = await response.json();
   if (json.error) {
     throw new Error(json.error);
+  }
+  if (!response.ok && typeof json.detail === 'string') {
+    throw new Error(json.detail);
   }
 
   if (!response.ok) {

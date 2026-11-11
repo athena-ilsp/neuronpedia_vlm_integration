@@ -3,6 +3,7 @@
 import { useGraphContext } from '@/components/provider/graph-provider';
 import { Button } from '@/components/shadcn/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/shadcn/dialog';
+import { chipLabel, tokenChips } from '@/lib/utils/image-prompt';
 import { DownloadIcon, Info } from 'lucide-react';
 import { CLTGraph, CLTGraphQParams } from './graph-types';
 
@@ -133,12 +134,12 @@ export default function GraphInfoModal({ cltGraph, selectedMetadataGraph }: Grap
               </div>
               <div>
                 <div className="mt-1 flex flex-wrap gap-1">
-                  {metadata.prompt_tokens.map((token, i) => (
+                  {tokenChips(metadata.prompt_tokens, metadata.image_input?.image_positions).map((chip, i) => (
                     <span
-                      key={`${token}-${i}`}
+                      key={`${chip.token}-${i}`}
                       className="mx-[1px] mb-1 rounded bg-slate-200 px-[2px] py-0.5 font-mono text-[11px] text-slate-800"
                     >
-                      {token.replaceAll('\n', '⏎').replaceAll(' ', '\u00A0')}
+                      {chipLabel(chip).replaceAll('\n', '⏎').replaceAll(' ', '\u00A0')}
                     </span>
                   ))}
                 </div>

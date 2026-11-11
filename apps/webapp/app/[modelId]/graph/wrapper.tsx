@@ -9,6 +9,7 @@ import { useEffect } from 'react';
 import GraphFeatureDetail from './feature-detail';
 import GenerateGraphModal from './generate-graph-modal';
 import GraphToolbar from './graph-toolbar';
+import ImagePatchView from './image-patch-view';
 import LinkGraph from './link-graph';
 import CopyModal from './modals/copy-modal';
 import LoadSubgraphModal from './modals/load-subgraph-modal';
@@ -71,6 +72,8 @@ export default function GraphWrapper({ hasSlug, showGenerateModal }: { hasSlug: 
             ) : selectedMetadataGraph ? (
               <div className="flex h-full max-h-full w-full flex-col">
                 <div className="flex h-[50%] max-h-[50%] min-h-[50%] w-full flex-row pb-2">
+                  {/* Only for a graph of an image prompt; renders nothing otherwise. */}
+                  <ImagePatchView />
                   <LinkGraph />
                   <GraphNodeConnections />
                 </div>

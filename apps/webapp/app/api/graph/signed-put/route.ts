@@ -2,8 +2,9 @@ import { MAX_GRAPH_UPLOAD_SIZE_BYTES, NP_GRAPH_BUCKET } from '@/app/[modelId]/gr
 import { prisma } from '@/lib/db';
 import { getUserByName } from '@/lib/db/user';
 import { GRAPH_S3_USER_GRAPHS_DIR, MAX_PUT_REQUESTS_PER_DAY } from '@/lib/utils/graph';
+import { makeUploadS3Client } from '@/lib/utils/s3';
 import { RequestAuthedUser, withAuthedUser } from '@/lib/with-user';
-import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { headers } from 'next/headers';
 import { NextResponse } from 'next/server';
@@ -108,13 +109,7 @@ export const POST = withAuthedUser(async (request: RequestAuthedUser) => {
     const key = `${GRAPH_S3_USER_GRAPHS_DIR}/${userId}/${filenameWithoutExt}-${Date.now()}.json`;
 
     // Initialize S3 client
-    const s3Client = new S3Client({
-      region: process.env.AWS_REGION || 'us-east-1',
-      credentials: {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
-      },
-    });
+    const s3Client = makeUploadS3Client();
 
     // Create the command for putting an object
     const command = new PutObjectCommand({

@@ -1,6 +1,7 @@
 import { useGraphContext } from '@/components/provider/graph-provider';
 import { useGraphStateContext } from '@/components/provider/graph-state-provider';
 import { useScreenSize } from '@/lib/hooks/use-screen-size';
+import { patchCell } from '@/lib/utils/image-prompt';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import d3 from './d3-jetpack';
 import GraphControls, { MIN_TOKENS_TO_ALLOW_HORIZONTAL_SCROLL } from './graph-controls';
@@ -812,6 +813,17 @@ export default function LinkGraph() {
     const nonUndefinedNodes = nodes.filter((d) => d.ctx_idx !== undefined);
     const earliestCtxWithNodes = d3.min(nonUndefinedNodes, (d) => d.ctx_idx as number) || 0;
 
+    // An image prompt has one position per patch (256 on Gemma 3). Every position keeps its input
+    // (embedding) node, so a patch column is collapsed to zero width unless something else -- a
+    // feature or an error node -- survived pruning there.
+    const imageInput = data.metadata.image_input;
+    const imagePatchAt = new Map<number, { row: number; col: number }>(
+      (imageInput?.image_positions ?? []).map((ctxIdx, k) => [ctxIdx, patchCell(k, imageInput?.grid_cols ?? 1)]),
+    );
+    const isTracedNode = (d: CLTGraphNode) => d.feature_type !== 'embedding';
+    const isEmptyPatchColumn = (ctxIdx: number, group: CLTGraphNode[]) =>
+      imagePatchAt.has(ctxIdx) && !group.some(isTracedNode);
+
     let cumsum = 0;
     const ctxCounts: ContextCount[] = [];
 
@@ -822,7 +834,9 @@ export default function LinkGraph() {
       let maxCount = 1;
       if (ctxIdx >= earliestCtxWithNodes) {
         const group = nodes.filter((d) => d.ctx_idx === ctxIdx);
-        if (group.length > 0) {
+        if (isEmptyPatchColumn(ctxIdx, group)) {
+          maxCount = 0;
+        } else if (group.length > 0) {
           const groupedByStream = d3.nestBy(group, (d) => d.streamIdx?.toString() || '0');
           const lengths = groupedByStream.map((g) => g.length);
           maxCount = Math.max(1, Math.max(...lengths));
@@ -1135,12 +1149,15 @@ export default function LinkGraph() {
       });
 
     // Add x axis text/lines for prompt tokens
-    const promptTicks = data.metadata.prompt_tokens.slice(earliestCtxWithNodes).map((token, i) => {
-      const ctxIdx = i + earliestCtxWithNodes;
-      const mNodes = nodes.filter((d) => d.ctx_idx === ctxIdx);
-      const hasEmbed = mNodes.some((d) => d.feature_type === 'embedding');
-      return { token, ctx_idx: ctxIdx, mNodes, hasEmbed };
-    });
+    const promptTicks = data.metadata.prompt_tokens
+      .slice(earliestCtxWithNodes)
+      .map((token, i) => {
+        const ctxIdx = i + earliestCtxWithNodes;
+        const mNodes = nodes.filter((d) => d.ctx_idx === ctxIdx);
+        const hasEmbed = mNodes.some((d) => d.feature_type === 'embedding');
+        return { token, ctx_idx: ctxIdx, mNodes, hasEmbed };
+      })
+      .filter((d) => !isEmptyPatchColumn(d.ctx_idx, d.mNodes));
 
     const xTickSel = c.svgBot
       .selectAll('g.prompt-token')
@@ -1159,7 +1176,7 @@ export default function LinkGraph() {
       .attr('d', `M-${padR + 3.5},${-c.y.bandwidth() / 2 + 6}V${8}`);
 
     xTickSel
-      .filter((d) => d.hasEmbed)
+      .filter((d) => d.hasEmbed && !imagePatchAt.has(d.ctx_idx))
       .append('g')
       .attr('transform', `translate(${X_LABEL_OFFSET})`)
       .append('text')
@@ -1171,6 +1188,25 @@ export default function LinkGraph() {
       .attr('dominant-baseline', 'middle')
       .attr('font-size', 10)
       .attr('fill', '#334155');
+
+    // An image patch's column is labelled with its grid cell (row,column, from 1); the image
+    // itself is shown once, beside the graph, where hovering a node highlights its patch.
+    xTickSel
+      .filter((d) => imagePatchAt.has(d.ctx_idx))
+      .append('g')
+      .attr('transform', `translate(${X_LABEL_OFFSET})`)
+      .append('text')
+      .text((d) => {
+        const { row, col } = imagePatchAt.get(d.ctx_idx) ?? { row: 0, col: 0 };
+        return `▦${row + 1},${col + 1}`;
+      })
+      .attr('x', -3)
+      .attr('y', 10)
+      .attr('text-anchor', 'middle')
+      .attr('transform', `rotate(-${X_LABEL_ROTATION_DEGREES})`)
+      .attr('dominant-baseline', 'middle')
+      .attr('font-size', 10)
+      .attr('fill', '#047857');
 
     // Add logit ticks
     const logitTickSel = c.svgBot

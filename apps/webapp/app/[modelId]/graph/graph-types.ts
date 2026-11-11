@@ -49,11 +49,22 @@ export type CltVisState = {
   // only for neuronpedia dashboards
   densityThreshold?: number;
 };
+// Set by the graph server when the prompt included an image (vision-language models): the image
+// itself and which prompt positions are its patches, laid out row-major on the patch grid.
+export type CLTGraphImageInput = {
+  image_base64: string;
+  image_token_id: number;
+  image_positions: number[];
+  grid_rows: number;
+  grid_cols: number;
+};
+
 export type CLTGraphInnerMetadata = {
   slug: string;
   scan: string;
   prompt_tokens: string[];
   prompt: string;
+  image_input?: CLTGraphImageInput;
 
   // dynamic pruning - mntss/hanna
   // default value for cltVisState.pruningThreshold

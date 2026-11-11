@@ -3,7 +3,7 @@ import { GraphProvider } from '@/components/provider/graph-provider';
 import { GraphStateProvider } from '@/components/provider/graph-state-provider';
 import { prisma } from '@/lib/db';
 import { getModelById } from '@/lib/db/model';
-import { ASSET_BASE_URL } from '@/lib/env';
+import { ASSET_BASE_URL, IS_LOCALHOST } from '@/lib/env';
 import { GraphMetadataWithPartialRelations, ModelWithPartialRelations } from '@/prisma/generated/zod';
 import { Metadata } from 'next';
 import { getServerSession } from 'next-auth/next';
@@ -188,6 +188,11 @@ export default async function Page(props: {
   // always get the user's graphMetadatas from our database
   const graphMetadatas =
     session && session.user && session.user.id ? await getGraphMetadataWithUser({ userId: session.user.id }) : [];
+  // A local instance usually generates graphs signed out, which stores them with no user; list them
+  // too, or they are only reachable by their link.
+  if (IS_LOCALHOST) {
+    graphMetadatas.push(...(await getGraphMetadataWithUser({ userId: null })));
+  }
 
   // add those graphmetadatas to the modelIdToGraphMetadatasMap too
   graphMetadatas.forEach((graphMetadata) => {

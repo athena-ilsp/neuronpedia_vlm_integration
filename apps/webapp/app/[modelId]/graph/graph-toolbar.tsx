@@ -10,6 +10,8 @@ import { useGlobalContext } from '@/components/provider/global-provider';
 import { useGraphModalContext } from '@/components/provider/graph-modal-provider';
 import { useGraphContext } from '@/components/provider/graph-provider';
 import { Button } from '@/components/shadcn/button';
+import { IS_LOCALHOST } from '@/lib/env';
+import { chipLabel, tokenChips } from '@/lib/utils/image-prompt';
 import { useRouter } from '@bprogress/next';
 import * as Select from '@radix-ui/react-select';
 import * as ToggleGroup from '@radix-ui/react-toggle-group';
@@ -380,12 +382,12 @@ export default function GraphToolbar() {
                 <Select.Value asChild>
                   <div className="flex w-full flex-col items-start justify-start gap-y-[7px] overflow-y-visible">
                     <div className="text-overflow-ellipsis whitespace-nowrap text-[10px] font-normal leading-none text-slate-500">
-                      {selectedMetadataGraph.promptTokens.map((token, i) => (
+                      {tokenChips(selectedMetadataGraph.promptTokens).map((chip, i) => (
                         <span
-                          key={`${token}-${i}`}
+                          key={`${chip.token}-${i}`}
                           className="mx-0.5 rounded bg-slate-100 px-[3px] py-0.5 font-mono text-slate-700"
                         >
-                          {token.replaceAll('\n', '↵').replaceAll(' ', '\u00A0')}
+                          {chipLabel(chip).replaceAll('\n', '↵').replaceAll(' ', '\u00A0')}
                         </span>
                       ))}
                     </div>
@@ -422,7 +424,7 @@ export default function GraphToolbar() {
                       [];
 
                     const myGraphs = allVisibleGraphs
-                      .filter((graph) => session.data?.user?.id === graph.userId)
+                      .filter((graph) => session.data?.user?.id === graph.userId || (IS_LOCALHOST && !graph.userId))
                       .filter((graph) => graph.sourceSetName === selectedSourceSetName);
                     const featuredGraphs = allVisibleGraphs
                       .filter((graph) => graph.isFeatured && session.data?.user?.id !== graph.userId)
@@ -481,12 +483,12 @@ export default function GraphToolbar() {
                               </div>
                               <div className="mt-2 w-full whitespace-pre-line pl-0 text-[10px] leading-tight text-slate-500">
                                 <div className="flex flex-wrap">
-                                  {graph.promptTokens.map((token, i) => (
-                                    <Fragment key={`${token}-${i}`}>
+                                  {tokenChips(graph.promptTokens).map((chip, i) => (
+                                    <Fragment key={`${chip.token}-${i}`}>
                                       <span className="mx-[1px] mb-1 rounded bg-slate-100 px-[2px] py-0.5 font-mono text-slate-700 group-hover:bg-sky-200 group-hover:text-sky-700 group-data-[highlighted]:bg-sky-200 group-data-[highlighted]:text-sky-700">
-                                        {token.replaceAll(' ', '\u00A0').replaceAll('\n', '↵')}
+                                        {chipLabel(chip).replaceAll(' ', '\u00A0').replaceAll('\n', '↵')}
                                       </span>
-                                      {(token === '⏎' || token === '⏎⏎') && <div className="w-full" />}
+                                      {(chip.token === '⏎' || chip.token === '⏎⏎') && <div className="w-full" />}
                                     </Fragment>
                                   ))}
                                 </div>

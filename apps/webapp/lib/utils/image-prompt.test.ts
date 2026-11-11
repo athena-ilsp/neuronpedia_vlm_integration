@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { collapseImageTokens, IMAGE_TOKEN_LABEL, patchCell, patchLabel, strongestPatch } from './image-prompt';
+import {
+  collapseImageTokens,
+  IMAGE_TOKEN_LABEL,
+  imageDataUrl,
+  imagePositionsFromTokens,
+  patchCell,
+  patchLabel,
+  strongestPatch,
+  tokenChips,
+} from './image-prompt';
 
 // <bos> <turn> <img> <img> <img> <img> text <eot>
 const tokens = ['<bos>', '<turn>', '<i>', '<i>', '<i>', '<i>', 'cat', '<eot>'];
@@ -42,5 +51,34 @@ describe('patch positions', () => {
     expect(patchLabel(5, image, 2)).toBe('patch 2,2');
     expect(patchLabel(5, image, null)).toBe('patch 4');
     expect(patchLabel(6, image, 2)).toBeUndefined();
+  });
+});
+
+describe('tokenChips', () => {
+  it('makes one chip per image run, counting its patches', () => {
+    expect(tokenChips(tokens, image)).toEqual([
+      { token: '<bos>', imagePatches: 0 },
+      { token: '<turn>', imagePatches: 0 },
+      { token: IMAGE_TOKEN_LABEL, imagePatches: 4 },
+      { token: 'cat', imagePatches: 0 },
+      { token: '<eot>', imagePatches: 0 },
+    ]);
+  });
+
+  it('finds the image by its placeholder token when no positions are given', () => {
+    const saved = ['<bos>', '<start_of_image>', '<image_soft_token>', '<image_soft_token>', '<end_of_image>', 'a'];
+    expect(imagePositionsFromTokens(saved)).toEqual([2, 3]);
+    expect(tokenChips(saved).map((c) => c.imagePatches)).toEqual([0, 0, 2, 0, 0]);
+  });
+
+  it('leaves a text-only prompt alone', () => {
+    expect(tokenChips(['a', 'b']).map((c) => c.token)).toEqual(['a', 'b']);
+  });
+});
+
+describe('imageDataUrl', () => {
+  it('keeps a data URL and wraps bare base64', () => {
+    expect(imageDataUrl('data:image/jpeg;base64,AAA')).toBe('data:image/jpeg;base64,AAA');
+    expect(imageDataUrl('AAA')).toBe('data:image/png;base64,AAA');
   });
 });

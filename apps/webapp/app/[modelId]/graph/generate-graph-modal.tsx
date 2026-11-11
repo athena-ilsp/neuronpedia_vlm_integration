@@ -20,6 +20,7 @@ import {
   GRAPH_EDGETHRESHOLD_MIN,
   GRAPH_EDGETHRESHOLD_MIN_LORSA,
   GRAPH_GENERATION_ENABLED_MODELS,
+  GRAPH_IMAGE_INPUT_MODELS,
   GRAPH_MAX_PROMPT_LENGTH_CHARS,
   GRAPH_MAX_TOKENS,
   GRAPH_MAXFEATURENODES_DEFAULT,
@@ -58,6 +59,8 @@ import { useSession } from 'next-auth/react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ReactTextareaAutosize from 'react-textarea-autosize';
 
+import ImageInput from '@/components/inference-searcher/image-input';
+import { imagePositionsFromTokens, textTokenCount, tokenChips } from '@/lib/utils/image-prompt';
 import { ChatMessage } from '@/lib/utils/steer';
 
 // Sentinel for the "every graph host was busy" case, which reaches us as a 503
@@ -121,6 +124,7 @@ interface GenerateGraphResponse {
 const GRAPH_INSTRUCT_QWEN = ['qwen3-4b'];
 const GRAPH_INSTRUCT_GEMMA_3 = ['gemma-3-4b-it'];
 const SLOWER_MODELS = ['gemma-3-4b-it', 'qwen3-1.7b'];
+const IMAGE_GRAPH_ESTIMATED_SECONDS = 240;
 
 const isInstructModel = (id: string) => GRAPH_INSTRUCT_QWEN.includes(id) || GRAPH_INSTRUCT_GEMMA_3.includes(id);
 
@@ -152,6 +156,7 @@ const FormikValuesObserver: React.FC<{
   maxNLogits: number;
   desiredLogitProb: number;
   messages: GraphChatMessage[] | null;
+  image: string | undefined;
   // Set while we still don't know what to tokenize (see `awaitingPromptParse`).
   paused: boolean;
   debouncedTokenize: _.DebouncedFunc<
@@ -162,9 +167,10 @@ const FormikValuesObserver: React.FC<{
       maxNLogits: number,
       desiredLogitProb: number,
       messages: GraphChatMessage[] | null,
+      image: string | undefined,
     ) => void
   >;
-}> = ({ prompt, modelId, sourceSetName, maxNLogits, desiredLogitProb, messages, paused, debouncedTokenize }) => {
+}> = ({ prompt, modelId, sourceSetName, maxNLogits, desiredLogitProb, messages, image, paused, debouncedTokenize }) => {
   const messagesKey = messages ? JSON.stringify(messages) : '';
   useEffect(() => {
     if (paused) {
@@ -172,10 +178,10 @@ const FormikValuesObserver: React.FC<{
       debouncedTokenize.cancel();
       return;
     }
-    debouncedTokenize(modelId, prompt, sourceSetName, maxNLogits, desiredLogitProb, messages);
+    debouncedTokenize(modelId, prompt, sourceSetName, maxNLogits, desiredLogitProb, messages, image);
     // messagesKey stands in for `messages` (stable string) in the dep list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prompt, modelId, maxNLogits, desiredLogitProb, messagesKey, paused, debouncedTokenize]);
+  }, [prompt, modelId, maxNLogits, desiredLogitProb, messagesKey, image, paused, debouncedTokenize]);
 
   return null;
 };
@@ -210,6 +216,9 @@ export default function GenerateGraphModal({ showGenerateModal }: { showGenerate
   const [countdownTime, setCountdownTime] = useState<number | null>(null);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [chatPrompts, setChatPrompts] = useState<ChatMessage[]>([]);
+  // An image for a vision-language model (a data URL), shown to it ahead of the text.
+  const [image, setImage] = useState<string | undefined>(undefined);
+  const imageInputSupported = GRAPH_IMAGE_INPUT_MODELS.includes(selectedModelId || '');
   const [tokenizeError, setTokenizeError] = useState<string | null>(null);
   const [parsedChatKey, setParsedChatKey] = useState<string | null>(null);
 
@@ -316,6 +325,7 @@ export default function GenerateGraphModal({ showGenerateModal }: { showGenerate
         maxNLogits: number,
         desiredLogitProb: number,
         messages: GraphChatMessage[] | null,
+        imageBase64: string | undefined,
       ) => {
         const hasMessages = !!messages && messages.length > 0;
         if ((!prompt.trim() && !hasMessages) || !modelId) {
@@ -339,6 +349,7 @@ export default function GenerateGraphModal({ showGenerateModal }: { showGenerate
               sourceSetName,
               maxNLogits,
               desiredLogitProb,
+              ...(imageBase64 ? { imageBase64 } : {}),
             }),
           });
           if (!response.ok) {
@@ -360,7 +371,11 @@ export default function GenerateGraphModal({ showGenerateModal }: { showGenerate
           // instruct models the frontend no longer has the rendered string).
           setEndsWithSpace((data.prompt ?? prompt).endsWith(' '));
           setGraphTokenizeResponse(data);
-          if (data.input_tokens) {
+          if (data.input_tokens && imageBase64) {
+            // Image graphs are bounded by the graph server's feature-node cap rather than by the
+            // prompt length: about 3.5 minutes on gemma-3-4b-it.
+            setEstimatedTime(IMAGE_GRAPH_ESTIMATED_SECONDS);
+          } else if (data.input_tokens) {
             setEstimatedTime(
               getEstimatedTimeFromNumTokens(
                 data.input_tokens.length,
@@ -443,6 +458,7 @@ export default function GenerateGraphModal({ showGenerateModal }: { showGenerate
         body: JSON.stringify({
           ...values,
           ...(submitMessages ? { messages: submitMessages } : {}),
+          ...(image ? { imageBase64: image } : {}),
         }),
       });
 
@@ -493,6 +509,7 @@ export default function GenerateGraphModal({ showGenerateModal }: { showGenerate
       if (!generationResult) {
         setGraphTokenizeResponse(null);
         setChatPrompts([]);
+        setImage(undefined);
         setEstimatedTime(null);
         setError(null);
         setTokenizeError(null);
@@ -578,6 +595,7 @@ export default function GenerateGraphModal({ showGenerateModal }: { showGenerate
                   maxNLogits={values.maxNLogits}
                   desiredLogitProb={values.desiredLogitProb}
                   messages={messagesToSend(values.modelId, chatPrompts)}
+                  image={imageInputSupported ? image : undefined}
                   paused={awaitingPromptParse}
                   debouncedTokenize={debouncedTokenize}
                 />
@@ -1050,6 +1068,15 @@ export default function GenerateGraphModal({ showGenerateModal }: { showGenerate
                         </div>
                       )}
 
+                      {imageInputSupported && (
+                        <div className="mb-3 flex flex-row items-center gap-x-3">
+                          <ImageInput image={image} onChange={setImage} disabled={isGenerating} />
+                          <p className="text-[11.5px] text-slate-500">
+                            Optional image, shown to the model ahead of your text. Each image patch becomes an input of
+                            the graph. Image graphs take a few minutes and trace fewer feature nodes.
+                          </p>
+                        </div>
+                      )}
                       <div>
                         {GRAPH_INSTRUCT_QWEN.includes(values.modelId) ? (
                           <>
@@ -1379,16 +1406,19 @@ export default function GenerateGraphModal({ showGenerateModal }: { showGenerate
                         <div className="flex flex-col">
                           <div className="forceShowScrollBar mx-0 mb-2 mt-1 max-h-full flex-1 overflow-y-scroll text-xs text-slate-500">
                             <div className="text-[8px] font-medium uppercase text-slate-500">
-                              {graphTokenizeResponse.input_tokens.length} TOKENS
+                              {textTokenCount(graphTokenizeResponse.input_tokens)} TOKENS
+                              {imagePositionsFromTokens(graphTokenizeResponse.input_tokens).length > 0 &&
+                                ` + ${imagePositionsFromTokens(graphTokenizeResponse.input_tokens).length} IMAGE PATCHES`}
                             </div>
                             <div className="">
                               {(() => {
-                                const tokenGroups: string[][] = [];
-                                let currentGroup: string[] = [];
+                                // An image's patches show as one chip.
+                                const tokenGroups: ReturnType<typeof tokenChips>[] = [];
+                                let currentGroup: ReturnType<typeof tokenChips> = [];
 
-                                graphTokenizeResponse.input_tokens.forEach((token) => {
-                                  currentGroup.push(token);
-                                  if (/\n/.test(token)) {
+                                tokenChips(graphTokenizeResponse.input_tokens).forEach((chip) => {
+                                  currentGroup.push(chip);
+                                  if (/\n/.test(chip.token)) {
                                     tokenGroups.push(currentGroup);
                                     currentGroup = [];
                                   }
@@ -1400,15 +1430,25 @@ export default function GenerateGraphModal({ showGenerateModal }: { showGenerate
 
                                 return tokenGroups.map((group, groupIdx) => (
                                   <div key={groupIdx} className="flex flex-wrap">
-                                    {group.map((t, idx) => (
-                                      <span
-                                        key={`${t}-${groupIdx}-${idx}`}
-                                        className="mx-0.5 my-0.5 rounded bg-slate-200 px-[5px] py-[1px] font-mono text-[10px] text-slate-700"
-                                      >
-                                        {t.toString().replaceAll(' ', '\u00A0').replaceAll('\n', '↵')}
-                                      </span>
-                                    ))}
-                                    {/\n/.test(group[group.length - 1]) && <br />}
+                                    {group.map((chip, idx) =>
+                                      chip.imagePatches > 0 ? (
+                                        <span
+                                          key={`image-${groupIdx}-${idx}`}
+                                          title={`${chip.imagePatches} image patch tokens`}
+                                          className="mx-0.5 my-0.5 rounded bg-sky-100 px-[5px] py-[1px] font-mono text-[10px] text-sky-700"
+                                        >
+                                          {chip.token} ×{chip.imagePatches}
+                                        </span>
+                                      ) : (
+                                        <span
+                                          key={`${chip.token}-${groupIdx}-${idx}`}
+                                          className="mx-0.5 my-0.5 rounded bg-slate-200 px-[5px] py-[1px] font-mono text-[10px] text-slate-700"
+                                        >
+                                          {chip.token.replaceAll(' ', '\u00A0').replaceAll('\n', '↵')}
+                                        </span>
+                                      ),
+                                    )}
+                                    {/\n/.test(group[group.length - 1].token) && <br />}
                                   </div>
                                 ));
                               })()}
@@ -1474,7 +1514,7 @@ export default function GenerateGraphModal({ showGenerateModal }: { showGenerate
                       {errors.prompt && touched.prompt && <p className="mt-1 text-xs text-red-500">{errors.prompt}</p>}
                       {graphTokenizeResponse &&
                         !isTokenizing &&
-                        graphTokenizeResponse.input_tokens.length >
+                        textTokenCount(graphTokenizeResponse.input_tokens) >
                           (LORSA_MODELS.includes(values.modelId) ? LORSA_MAX_TOKENS : GRAPH_MAX_TOKENS) && (
                           <p className="mt-1 text-xs text-red-500">
                             Prompt exceeds maximum token limit of{' '}
@@ -1551,7 +1591,7 @@ export default function GenerateGraphModal({ showGenerateModal }: { showGenerate
                           !dirty ||
                           Object.keys(errors).length > 0 ||
                           (graphTokenizeResponse !== null &&
-                            graphTokenizeResponse.input_tokens.length >
+                            textTokenCount(graphTokenizeResponse.input_tokens) >
                               (LORSA_MODELS.includes(values.modelId) ? LORSA_MAX_TOKENS : GRAPH_MAX_TOKENS))
                         }
                         className="w-full text-xs sm:w-auto"

@@ -2,6 +2,9 @@
 
 const withMDX = require('@next/mdx')();
 
+// Keep in sync with GRAPH_STORAGE_PROXY_PATH in lib/utils/s3.ts.
+const GRAPH_STORAGE_PROXY_PATH = '/graph-storage';
+
 const nextConfig = {
   outputFileTracingRoot: __dirname,
   outputFileTracingIncludes: {
@@ -49,6 +52,11 @@ const nextConfig = {
         source: '/assistant-axis',
         destination: '/llama3.3-70b-it/assistant-axis',
       },
+      // Graphs written to an S3-compatible store (AWS_ENDPOINT_URL, e.g. a local MinIO) are read
+      // through this origin, so a browser needs to reach only the webapp, not the store.
+      ...(process.env.AWS_ENDPOINT_URL
+        ? [{ source: `${GRAPH_STORAGE_PROXY_PATH}/:path*`, destination: `${process.env.AWS_ENDPOINT_URL}/:path*` }]
+        : []),
     ];
   },
   async redirects() {

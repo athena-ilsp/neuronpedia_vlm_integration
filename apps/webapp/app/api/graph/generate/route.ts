@@ -14,8 +14,9 @@ import {
   LORSA_MAX_TOKENS,
   LORSA_MODELS,
 } from '@/lib/utils/graph';
+import { browserUrlForUpload, makeUploadS3Client } from '@/lib/utils/s3';
 import { RequestOptionalUser, withOptionalUser } from '@/lib/with-user';
-import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import Ajv from 'ajv';
 import { NextResponse } from 'next/server';
@@ -89,6 +90,9 @@ import * as yup from 'yup';
  *                 minimum: 3000
  *                 maximum: 10000
  *                 default: 5000
+ *               imageBase64:
+ *                 type: string
+ *                 description: Optional. A base64 image (or data URL) shown to a vision-language model ahead of the prompt's text, where its chat template puts an image. Only for a model whose graph server takes images. The token limit applies to the text; the graph's metadata.image_input describes the image positions.
  *               qkTopFraction:
  *                 type: number
  *                 description: (Lorsa models only) Fraction of top Lorsa heads to run QK tracing on. Ignored for non-lorsa models.
@@ -275,13 +279,7 @@ export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
     const key = `${GRAPH_S3_USER_GRAPHS_DIR}/${userId || GRAPH_ANONYMOUS_USER_ID}/${validatedData.slug}-${Date.now()}.json`;
 
     // Initialize S3 client
-    const s3Client = new S3Client({
-      region: process.env.AWS_REGION || 'us-east-1',
-      credentials: {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
-      },
-    });
+    const s3Client = makeUploadS3Client();
 
     // Create the command for putting an object
     const command = new PutObjectCommand({
@@ -310,6 +308,7 @@ export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
       validatedData.qkTopFraction,
       validatedData.qkTopk,
       validatedData.messages as GraphChatMessage[] | null,
+      validatedData.imageBase64,
     );
 
     // download the file from S3
@@ -364,7 +363,7 @@ export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
         titlePrefix: '',
         promptTokens: graph.metadata.prompt_tokens,
         prompt: graph.metadata.prompt,
-        url: cleanUrl,
+        url: browserUrlForUpload(cleanUrl),
         isFeatured: false,
       },
       create: {
@@ -375,14 +374,14 @@ export const POST = withOptionalUser(async (request: RequestOptionalUser) => {
         titlePrefix: '',
         promptTokens: graph.metadata.prompt_tokens,
         prompt: graph.metadata.prompt,
-        url: cleanUrl,
+        url: browserUrlForUpload(cleanUrl),
         isFeatured: false,
       },
     });
 
     return NextResponse.json({
       message: 'Graph saved to database',
-      s3url: cleanUrl,
+      s3url: browserUrlForUpload(cleanUrl),
       url: makeGraphPublicAccessGraphUrl(graph.metadata.scan, graph.metadata.slug),
       numNodes: graph.nodes.length,
       numLinks: graph.links.length,

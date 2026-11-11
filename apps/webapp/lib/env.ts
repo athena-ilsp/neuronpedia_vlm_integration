@@ -58,6 +58,10 @@ export const EMAIL_SENDING_PROVIDER = EmailProviderSchema.parse(process.env.EMAI
 // AWS
 export const AWS_ACCESS_KEY_ID = process.env.AWS_ACCESS_KEY_ID || '';
 export const AWS_SECRET_ACCESS_KEY = process.env.AWS_SECRET_ACCESS_KEY || '';
+export const AWS_REGION = process.env.AWS_REGION || 'us-east-1';
+// An S3-compatible store to write graphs to instead of AWS, e.g. a local MinIO at
+// http://localhost:9000. Unset means AWS.
+export const AWS_ENDPOINT_URL = process.env.AWS_ENDPOINT_URL || '';
 // Resend
 export const RESEND_EMAIL_API_KEY = process.env.RESEND_EMAIL_API_KEY || '';
 // Custom SMTP settings
