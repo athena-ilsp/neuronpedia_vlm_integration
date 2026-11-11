@@ -7,7 +7,9 @@ graph production generated from the same prompt and parameters (``tests/test_gra
 """
 
 import time
-from typing import Any
+from collections.abc import Mapping
+from contextlib import nullcontext
+from typing import Any, Literal
 
 import torch
 from circuit_tracer import attribute
@@ -21,7 +23,7 @@ from transformers import AutoTokenizer
 
 
 def build_circuit_tracer_graph(
-    prompt: str,
+    prompt: str | torch.Tensor,
     model: Any,
     *,
     np_model_id: str,
@@ -33,25 +35,31 @@ def build_circuit_tracer_graph(
     node_threshold: float,
     edge_threshold: float,
     device: torch.device,
-    offload: str | None = None,
+    offload: Literal["cpu", "disk"] | None = None,
     update_interval: int = 1000,
+    forward_kwargs: Mapping[str, torch.Tensor] | None = None,
 ) -> tuple[Any, float]:
     """Attribute ``prompt`` on ``model`` and return the output model and the attribution time in ms.
 
     ``prompt`` is what circuit-tracer tokenizes, BOS included where the model needs one. The graph
     is pruned on ``device`` and moved to the CPU before the node and edge files are built from it.
+
+    ``forward_kwargs`` carries an image prompt's non-token inputs (see ``image_prompt``); ``prompt``
+    is then the processor's token ids, image placeholders included.
     """
     started = time.time()
-    graph = attribute(
-        prompt,
-        model,
-        max_n_logits=max_n_logits,
-        desired_logit_prob=desired_logit_prob,
-        batch_size=batch_size,
-        max_feature_nodes=max_feature_nodes,
-        offload=offload,
-        update_interval=update_interval,
-    )
+    inputs = model.multimodal_inputs(forward_kwargs) if forward_kwargs is not None else nullcontext()
+    with inputs:
+        graph = attribute(
+            prompt,
+            model,
+            max_n_logits=max_n_logits,
+            desired_logit_prob=desired_logit_prob,
+            batch_size=batch_size,
+            max_feature_nodes=max_feature_nodes,
+            offload=offload,
+            update_interval=update_interval,
+        )
     attribution_time_ms = (time.time() - started) * 1000
 
     graph.to(device)

@@ -158,6 +158,11 @@ export interface components {
        */
       desired_logit_prob: number;
       /**
+       * Image Base64
+       * @description A base64 image (or data URL) shown to a vision-language model ahead of the prompt's text, where its chat template puts an image. circuit-tracer with the interp_engine backend only.
+       */
+      image_base64?: string | null;
+      /**
        * Max N Logits
        * @default 10
        */
@@ -230,6 +235,11 @@ export interface components {
        * @default false
        */
       enable_qk_tracing: boolean;
+      /**
+       * Image Base64
+       * @description A base64 image (or data URL) shown to a vision-language model ahead of the prompt's text, where its chat template puts an image. circuit-tracer with the interp_engine backend only.
+       */
+      image_base64?: string | null;
       /**
        * Max Feature Nodes
        * @default 10000

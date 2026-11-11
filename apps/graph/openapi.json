@@ -21,6 +21,18 @@
             "title": "Desired Logit Prob",
             "type": "number"
           },
+          "image_base64": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A base64 image (or data URL) shown to a vision-language model ahead of the prompt's text, where its chat template puts an image. circuit-tracer with the interp_engine backend only.",
+            "title": "Image Base64"
+          },
           "max_n_logits": {
             "default": 10,
             "title": "Max N Logits",
@@ -134,6 +146,18 @@
             "default": false,
             "title": "Enable Qk Tracing",
             "type": "boolean"
+          },
+          "image_base64": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A base64 image (or data URL) shown to a vision-language model ahead of the prompt's text, where its chat template puts an image. circuit-tracer with the interp_engine backend only.",
+            "title": "Image Base64"
           },
           "max_feature_nodes": {
             "default": 10000,

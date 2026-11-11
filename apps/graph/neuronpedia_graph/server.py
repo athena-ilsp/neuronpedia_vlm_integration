@@ -31,8 +31,15 @@ from neuronpedia_graph.chat_prompt import (
     strip_leading_bos,
     unsteerable_token_positions,
 )
+from neuronpedia_graph.image_prompt import (
+    IMAGE_MAX_BATCH_SIZE,
+    IMAGE_MAX_FEATURE_NODES,
+    ImageInputError,
+    ImagePrompt,
+    build_image_prompt,
+)
 from neuronpedia_graph.model_ids import hf_model_id_to_np_model_id
-from neuronpedia_graph.runtime_env import get_device, get_model_dtype, get_model_engine
+from neuronpedia_graph.runtime_env import get_device, get_model_dtype, get_model_engine, get_offload
 from neuronpedia_graph.schemas import (
     CheckBusyResponse,
     ForwardPassRequest,
@@ -164,6 +171,7 @@ SENTRY_START_ARG_ENV_VARS = (
     "SAE_TOPK",
     "NP_TRANSCODER_SOURCE_SET",
     "NP_LORSA_SOURCE_SET",
+    "OFFLOAD",
 )
 
 # Deliberately below the config above rather than inside the init block: what a graph pod is
@@ -212,7 +220,11 @@ else:
 
 
 LIMIT_TOKENS = int(os.getenv("TOKEN_LIMIT", "64"))
-OFFLOAD = None
+OFFLOAD = get_offload()
+# The Neuronpedia source set a circuit-tracer graph's features belong to (e.g. `xai-tc-topk64-16x`).
+# Written into the graph as `feature_details.neuronpedia_source_set`, which is what the webapp looks
+# feature dashboards up by when the transcoder set is not one of the published ones it knows.
+NP_TRANSCODER_SOURCE_SET = os.getenv("NP_TRANSCODER_SOURCE_SET") or None
 UPDATE_INTERVAL = int(os.getenv("UPDATE_INTERVAL", "1000"))
 
 SECRET_KEY = os.getenv("SECRET")
@@ -543,6 +555,30 @@ def ensure_bos_for_circuit_tracer(prompt: str) -> str:
     if tokens and tokens[0] == model.tokenizer.bos_token_id:
         return prompt
     return model.tokenizer.bos_token + prompt
+
+
+def image_prompt_for(prompt: str, image_base64: str) -> ImagePrompt:
+    """Build an image + text prompt for circuit-tracer, or refuse with a 400.
+
+    ``prompt`` is the chat-templated text the webapp sent; the image goes where the model's own
+    template would put it. Only the interp_engine backend can merge an image into attribution.
+    """
+    if ATTRIBUTION_ENGINE != "circuit-tracer" or MODEL_ENGINE != "interp_engine":
+        raise HTTPException(
+            status_code=400,
+            detail="Image input needs ATTRIBUTION_ENGINE=circuit-tracer with MODEL_ENGINE=interp_engine.",
+        )
+    try:
+        return build_image_prompt(
+            loaded_model_arg,
+            ensure_bos_for_circuit_tracer(prompt),
+            image_base64,
+            device=get_device(),
+            dtype=get_model_dtype(),
+            bos=model.tokenizer.bos_token,
+        )
+    except ImageInputError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 def printMemory():
@@ -947,15 +983,23 @@ async def forward_pass_handler(req_data: ForwardPassRequest):
             )
 
         # Circuit-tracer backend
-        tokens = model.tokenizer.encode(req_data.prompt, add_special_tokens=False)
-        if tokens and tokens[0] != model.tokenizer.bos_token_id:
-            tokens = model.tokenizer.encode(req_data.prompt, add_special_tokens=True)
-        print(f"Tokens: {tokens}")
+        image = image_prompt_for(req_data.prompt, req_data.image_base64) if req_data.image_base64 else None
+        if image is not None:
+            tokens = image.input_ids.tolist()
+        else:
+            tokens = model.tokenizer.encode(req_data.prompt, add_special_tokens=False)
+            if tokens and tokens[0] != model.tokenizer.bos_token_id:
+                tokens = model.tokenizer.encode(req_data.prompt, add_special_tokens=True)
+        print(f"Tokens: {len(tokens)}")
 
         input_ids = torch.tensor([tokens]).to(get_device())
 
         with torch.no_grad():
-            output = model(input_ids)
+            if image is not None:
+                with model.multimodal_inputs(image.forward_kwargs):
+                    output = model(input_ids)
+            else:
+                output = model(input_ids)
             if hasattr(output, "logits"):
                 output = output.logits
 
@@ -985,6 +1029,8 @@ async def forward_pass_handler(req_data: ForwardPassRequest):
 
         return response
 
+    except HTTPException:
+        raise
     # Endpoint boundary: a forward pass fails in whatever way the model and its backend
     # choose to, and the caller gets an error field either way.
     except Exception as e:  # noqa: BLE001
@@ -1028,12 +1074,16 @@ async def generate_graph(req_data: GraphGenerationRequest):
             )
 
         batch_size = req_data.batch_size
+        if req_data.image_base64:
+            batch_size = min(batch_size, IMAGE_MAX_BATCH_SIZE)
         max_n_logits = req_data.max_n_logits
         desired_logit_prob = req_data.desired_logit_prob
         node_threshold = req_data.node_threshold
         edge_threshold = req_data.edge_threshold
         slug_identifier = req_data.slug_identifier or f"generated-{int(time.time())}"
         max_feature_nodes = req_data.max_feature_nodes
+        if req_data.image_base64:
+            max_feature_nodes = min(max_feature_nodes, IMAGE_MAX_FEATURE_NODES)
         print(f"Thread {threading.get_ident()}: Processing request for prompt: '{prompt[:50]}...' with parameters:")
         print(f"  model_id: {requested_model_id}")
         print(f"  batch_size: {batch_size}")
@@ -1044,18 +1094,26 @@ async def generate_graph(req_data: GraphGenerationRequest):
         print(f"  slug_identifier: {slug_identifier}")
         print(f"  max_feature_nodes: {max_feature_nodes}")
         print(f"  attribution engine: {ATTRIBUTION_ENGINE}")
+        print(f"  image: {'yes' if req_data.image_base64 else 'no'}")
 
         def _blocking_graph_generation_task():
             print(f"Thread {threading.get_ident()} (worker): Starting blocking graph generation.")
             _total_start_time = time.time()
 
+            image = image_prompt_for(prompt, req_data.image_base64) if req_data.image_base64 else None
             try:
-                tokens = model.tokenizer.encode(prompt, add_special_tokens=False)
-                print(f"Thread {threading.get_ident()} (worker): {len(tokens)} Tokens: {tokens}")
-                if len(tokens) > LIMIT_TOKENS:
+                # The limit is on the text: an image adds a fixed number of tokens (256 on Gemma 3).
+                tokens = (
+                    image.input_ids[: image.text_token_count]
+                    if image is not None
+                    else model.tokenizer.encode(prompt, add_special_tokens=False)
+                )
+                n_tokens = image.text_token_count if image is not None else len(tokens)
+                print(f"Thread {threading.get_ident()} (worker): {n_tokens} text tokens")
+                if n_tokens > LIMIT_TOKENS:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Prompt exceeds token limit ({len(tokens)} > {LIMIT_TOKENS})",
+                        detail=f"Prompt exceeds token limit ({n_tokens} > {LIMIT_TOKENS})",
                     )
             # The token-limit refusal above is an HTTPException, so it has to pass through:
             # catching it here reported an over-long prompt as a 500 "Failed to tokenize".
@@ -1089,7 +1147,7 @@ async def generate_graph(req_data: GraphGenerationRequest):
 
             print(f"Thread {threading.get_ident()} (worker): Prompt: '{prompt}'")
 
-            ct_prompt = ensure_bos_for_circuit_tracer(prompt)
+            ct_prompt = image.input_ids if image is not None else ensure_bos_for_circuit_tracer(prompt)
 
             _output_model, attribution_time_ms = build_circuit_tracer_graph(
                 ct_prompt,
@@ -1099,26 +1157,39 @@ async def generate_graph(req_data: GraphGenerationRequest):
                 max_n_logits=max_n_logits,
                 desired_logit_prob=desired_logit_prob,
                 batch_size=batch_size,
-                max_feature_nodes=req_data.max_feature_nodes,
+                max_feature_nodes=max_feature_nodes,
                 node_threshold=node_threshold,
                 edge_threshold=edge_threshold,
                 device=get_device(),
                 offload=OFFLOAD,
                 update_interval=UPDATE_INTERVAL,
+                forward_kwargs=image.forward_kwargs if image is not None else None,
             )
             print(f"Thread {threading.get_ident()} (worker): Attribution Time: {attribution_time_ms:.2f}ms")
             print("output model created")
 
+            # Extra metadata the circuit-tracer output model has no field for.
+            extra_metadata: dict[str, Any] = {}
+            if NP_TRANSCODER_SOURCE_SET:
+                extra_metadata["feature_details"] = {"neuronpedia_source_set": NP_TRANSCODER_SOURCE_SET}
+            if image is not None and req_data.image_base64:
+                extra_metadata["image_input"] = image.metadata(req_data.image_base64)
+
             # if signed_url is not provided, we don't upload the file, just return the output model
             if req_data.signed_url is None:
                 print("No signed url provided, returning output model")
-                return _output_model
+                if not extra_metadata:
+                    return _output_model
+                graph_dict = _output_model.model_dump()
+                graph_dict["metadata"].update(extra_metadata)
+                return JSONResponse(content=graph_dict)
 
             # if signed_url is provided, we upload the file and return a success message
             print(f"Uploading file to url: {req_data.signed_url}")
             current_time_ms = int(time.time() * 1000)
             # Convert to dict to add additional fields
             model_dict = _output_model.model_dump()
+            model_dict["metadata"].update(extra_metadata)
 
             # Only the circuit-tracer path reaches here, and it refuses to start without a
             # transcoder set, so this is a startup invariant rather than a runtime check.
@@ -1126,7 +1197,7 @@ async def generate_graph(req_data: GraphGenerationRequest):
             model_dict["metadata"]["info"] = {
                 "creator_name": req_data.user_id if req_data.user_id else "Anonymous (CT)",
                 "creator_url": "https://neuronpedia.org",
-                "source_urls": TRANSCODER_SET_TO_SOURCE_URL_ARRAYS[transcoder_set],
+                "source_urls": TRANSCODER_SET_TO_SOURCE_URL_ARRAYS.get(transcoder_set, []),
                 "transcoder_set": transcoder_set,
                 "generator": generator_info(),
                 "create_time_ms": current_time_ms,

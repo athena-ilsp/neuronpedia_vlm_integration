@@ -69,6 +69,13 @@ class GraphGenerationRequest(GraphSchema):
     enable_qk_tracing: bool = False
     qk_top_fraction: float = 0.6
     qk_topk: int = 10
+    image_base64: str | None = Field(
+        default=None,
+        description=(
+            "A base64 image (or data URL) shown to a vision-language model ahead of the prompt's text, "
+            "where its chat template puts an image. circuit-tracer with the interp_engine backend only."
+        ),
+    )
 
 
 class ForwardPassRequest(GraphSchema):
@@ -76,6 +83,13 @@ class ForwardPassRequest(GraphSchema):
     messages: list[GraphChatMessage] | None = None
     max_n_logits: int = 10
     desired_logit_prob: float = 0.95
+    image_base64: str | None = Field(
+        default=None,
+        description=(
+            "A base64 image (or data URL) shown to a vision-language model ahead of the prompt's text, "
+            "where its chat template puts an image. circuit-tracer with the interp_engine backend only."
+        ),
+    )
 
 
 class SteerFeature(GraphSchema):

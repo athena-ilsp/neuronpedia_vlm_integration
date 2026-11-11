@@ -47,6 +47,22 @@ def get_model_engine() -> Literal["nnsight", "transformerlens", "interp_engine"]
     return engine
 
 
+def get_offload() -> Literal["cpu", "disk"] | None:
+    """Resolve OFFLOAD: where attribution parks model and transcoder weights it is done with.
+
+    Unset keeps them on the GPU. A 4B model with a full set of 16x transcoders needs "cpu" to
+    attribute an image prompt on a 24 GB card.
+    """
+    offload = os.getenv("OFFLOAD") or None
+    if offload is None:
+        return None
+    if offload == "cpu":
+        return "cpu"
+    if offload == "disk":
+        return "disk"
+    raise ValueError(f"OFFLOAD must be 'cpu', 'disk' or unset, got {offload!r}")
+
+
 def get_device() -> torch.device:
     """Resolve DEVICE, else the best device available."""
     device_env = os.environ.get("DEVICE")
