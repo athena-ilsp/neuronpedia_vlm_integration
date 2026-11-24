@@ -9,7 +9,7 @@ checkpoints and with the same exact bias folding as the SAELens conversion
 circuit-tracer's layout differs from SAELens in two ways: ``W_enc`` is ``[d_sae, d_model]`` (its
 encode is ``F.linear(x, W_enc, b_enc)``), and the activation is named in ``config.yaml``. A top-k
 transcoder needs ``activation: topk_relu`` -- ReLU on the top k, as xai_toolkit trains it -- which
-circuit-tracer gains on the ``feat/multimodal-inputs`` branch together with loading ``activation``
+circuit-tracer gains on the ``vlm-xai-toolkit-circuit-tracer`` branch of athena-ilsp/circuit-tracer together with loading ``activation``
 and ``k`` from a cached set's config.
 
     uv run python circuit_tracer_export.py --run-dir /path/to/gemma-3-4b-it --name gemma-3-4b-it-xai-tc-topk64-16x

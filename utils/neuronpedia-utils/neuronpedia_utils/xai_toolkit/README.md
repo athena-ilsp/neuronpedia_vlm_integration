@@ -67,7 +67,7 @@ uv run python circuit_tracer_export.py --run-dir /path/to/gemma-3-4b-it --name g
 ```
 
 A top-k transcoder is written as `activation: topk_relu`, which needs circuit-tracer's
-`feat/multimodal-inputs` branch (plain `topk` keeps negative survivors; that branch also stops a cached
+`vlm-xai-toolkit-circuit-tracer` branch of athena-ilsp/circuit-tracer (plain `topk` keeps negative survivors; that branch also stops a cached
 top-k set from loading as ReLU).
 
 ## The weights are re-expressed exactly
