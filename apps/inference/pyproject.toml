@@ -101,6 +101,13 @@ markers = [
 # `package-mode = false`), so uv installs the dependencies but not the project.
 package = false
 
+[tool.uv.sources]
+# The athena-ilsp fork of interp-engine: release v1.14.3 plus `capture(..., forward_kwargs=...)`,
+# which image prompts on vision-language models need (pixel_values etc. reach the HF forward).
+# Pinned to a commit, not the branch, so a relock cannot pick up new code by accident; bump it
+# deliberately when the fork's branch (vlm-xai-toolkit-interp-engine) moves.
+interp-engine = { git = "https://github.com/athena-ilsp/interp-engine.git", rev = "ae5cf12f6069d5de4c9bf4d2d7ed52df25d11d01" }
+
 # --------------------------------------------------------------- lint / types --
 # The ruff and pyright config below is shared verbatim by every apps/* project and by
 # interp-engine, so one `ruff format` verdict and one type-check rule set covers the repo.

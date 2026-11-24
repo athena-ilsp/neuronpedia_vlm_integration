@@ -55,10 +55,12 @@ package = false
 # platforms therefore land on different torch versions -- the pods stay on the
 # pinned cu128 build, a Mac takes the newest PyPI wheel.
 torch = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux'" }]
-# Temporarily a branch, for its `interp_engine` backend (`--model_backend`), which the v0.5.1 tag
-# does not have. Swap back to the tag below once that branch merges to main and is tagged.
-# circuit-tracer = { git = "https://github.com/decoderesearch/circuit-tracer.git", tag = "v0.5.1" }
-circuit-tracer = { git = "https://github.com/decoderesearch/circuit-tracer.git", rev = "405db9a5881ecb1591f28b1e25b7fb16baa9a75a" }
+# The athena-ilsp fork of circuit-tracer (branch vlm-xai-toolkit-circuit-tracer): upstream's
+# `interp-engine` branch at 405db9a, which has the `interp_engine` backend the v0.5.1 tag lacks,
+# plus `multimodal_inputs` (attribution graphs for image prompts) and the `topk_relu` activation
+# the xai_toolkit transcoders need. Pinned to a commit; bump it when the fork's branch moves.
+# Upstream: circuit-tracer = { git = "https://github.com/decoderesearch/circuit-tracer.git", rev = "405db9a5881ecb1591f28b1e25b7fb16baa9a75a" }
+circuit-tracer = { git = "https://github.com/athena-ilsp/circuit-tracer.git", rev = "9bc944cfd8b81a01a6fe07d7d7677f15a5a03e57" }
 llamascopium = { git = "https://github.com/OpenMOSS/Language-Model-SAEs.git", rev = "cfd202b18b22007f3a293670b7bbac972bd62093" }
 [[tool.uv.index]]
 name = "pytorch-cu128"
