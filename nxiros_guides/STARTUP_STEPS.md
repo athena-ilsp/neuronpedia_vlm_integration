@@ -7,6 +7,18 @@ Run everything from `/home/nxiros/workspace/Neuronpedia/neuronpedia-ie` (branch
 
 Order: check containers → T1 webapp → T2/T3 inference **or** T4 graph → PC tunnel.
 
+## Quick start: `nxiros_guides/np.sh`
+
+Runs the T1-T4 commands below in the background, one log per service in `nxiros_guides/logs/`:
+```bash
+nxiros_guides/np.sh start                # webapp + gemma + qwen  (or name them: start webapp graph)
+nxiros_guides/np.sh status               # ports, "still loading" until the LOADING COMPLETE banner, containers, GPUs
+nxiros_guides/np.sh logs gemma           # follow one log; Ctrl+C stops following only
+nxiros_guides/np.sh stop all             # or: stop gemma
+```
+For graphs: `np.sh stop gemma && np.sh start graph` (both need GPU 1; the script refuses to run them together).
+The sections below are the same commands by hand, one terminal each.
+
 ## One-time config (already applied)
 
 - **Root `.env`** (gitignored): `HF_TOKEN`, plus the local MinIO settings `AWS_ENDPOINT_URL=http://localhost:9000`,
